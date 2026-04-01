@@ -210,15 +210,30 @@ const KANJI_BANCHI = /[一二三四五六七八九十百千]+(番地|番)/;
 // カタカナ「ノ」区切り
 const KATAKANA_NO = /[0-9０-９]+ノ[0-9０-９]+/;
 
+// 住所コンポーネントの境界：キーワードの直後に来る典型的な文字
+// 大字・丁目・番地・数字（半角/全角）・漢数字・空白・中点、または文末
+const ADDR_BOUNDARY = '(?=[大字丁番地号\\d０-９一二三四五六七八九十百千\\s・]|$)';
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function judgeOldAddress(address) {
   if (!address || typeof address !== 'string' || !address.trim()) return { isOld: false, reason: '' };
   const reasons = [];
+
+  // 消滅郡名：部分一致（完全消滅した郡名なので誤検知リスク低）
   for (const d of EXTINCT_DISTRICTS) {
     if (address.includes(d)) reasons.push(`消滅郡名「${d}」`);
   }
+
+  // 消滅地名：前方一致（住所コンポーネント境界でのみマッチ）
+  // 例: 「高津町1-2-3」→ ヒット / 「高津町通り」→ スルー
   for (const t of OLD_TOWNS) {
-    if (address.includes(t)) reasons.push(`消滅地名「${t}」`);
+    const re = new RegExp(escapeRegex(t) + ADDR_BOUNDARY);
+    if (re.test(address)) reasons.push(`消滅地名「${t}」`);
   }
+
   const m = address.match(OLD_KANJI);
   if (m) reasons.push(`旧字体「${m[0]}」`);
   if (KANJI_BANCHI.test(address)) reasons.push('漢数字番地');
