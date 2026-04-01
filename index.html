@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>旧住所フィルター</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; background: #f5f5f5; color: #333; }
+  .container { max-width: 720px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+  .subtitle { font-size: 14px; color: #666; margin-bottom: 32px; }
+
+  .card { background: #fff; border-radius: 10px; padding: 28px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: #444; }
+
+  .drop-zone {
+    border: 2px dashed #ccc; border-radius: 8px; padding: 40px 20px;
+    text-align: center; cursor: pointer; transition: .15s;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #2563eb; background: #eff6ff; }
+  .drop-zone .icon { font-size: 36px; margin-bottom: 10px; }
+  .drop-zone p { font-size: 14px; color: #666; }
+  .drop-zone input { display: none; }
+
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  select { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; background: #fff; }
+
+  .btn {
+    display: inline-block; padding: 11px 28px; background: #2563eb; color: #fff;
+    border: none; border-radius: 7px; font-size: 15px; font-weight: 600;
+    cursor: pointer; transition: .15s; width: 100%;
+  }
+  .btn:hover { background: #1d4ed8; }
+  .btn:disabled { background: #93c5fd; cursor: not-allowed; }
+
+  .result { display: none; }
+  .stats { display: flex; gap: 12px; margin-bottom: 20px; }
+  .stat { flex: 1; background: #f8fafc; border-radius: 8px; padding: 16px; text-align: center; }
+  .stat .num { font-size: 28px; font-weight: 700; }
+  .stat .num.red { color: #dc2626; }
+  .stat .num.green { color: #16a34a; }
+  .stat .label { font-size: 12px; color: #666; margin-top: 2px; }
+
+  .dl-btn {
+    display: inline-block; padding: 11px 28px; background: #16a34a; color: #fff;
+    border: none; border-radius: 7px; font-size: 15px; font-weight: 600;
+    cursor: pointer; transition: .15s; width: 100%; text-align: center;
+  }
+  .dl-btn:hover { background: #15803d; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #f1f5f9; padding: 8px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
+  td { padding: 7px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.old { background: #fee2e2; color: #dc2626; }
+  .reason { color: #888; font-size: 11px; }
+
+  .note { font-size: 12px; color: #888; margin-top: 8px; }
+  #filename { font-size: 13px; color: #2563eb; margin-top: 8px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>旧住所フィルター</h1>
+  <p class="subtitle">Excelファイルの住所列をチェックし、旧住所の可能性がある行をフラグします。<br>ファイルはブラウザ内のみで処理され、サーバーには送信されません。</p>
+
+  <div class="card">
+    <h2>① ファイルを選択</h2>
+    <div class="drop-zone" id="dropZone">
+      <div class="icon">📂</div>
+      <p>クリックまたはドラッグ&ドロップ</p>
+      <p>.xlsx / .xls / .csv に対応</p>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+    </div>
+    <div id="filename"></div>
+  </div>
+
+  <div class="card" id="configCard" style="display:none">
+    <h2>② 住所列を選択</h2>
+    <div class="field">
+      <label>住所が入っている列</label>
+      <select id="colSelect"></select>
+    </div>
+    <p class="note">※ ヘッダー行がある場合は自動で検出します</p>
+    <br>
+    <button class="btn" id="runBtn" onclick="run()">判定を実行</button>
+  </div>
+
+  <div class="card result" id="resultCard">
+    <h2>③ 結果</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="num" id="statTotal">-</div>
+        <div class="label">総件数</div>
+      </div>
+      <div class="stat">
+        <div class="num red" id="statOld">-</div>
+        <div class="label">旧住所の可能性あり</div>
+      </div>
+      <div class="stat">
+        <div class="num green" id="statOk">-</div>
+        <div class="label">問題なし</div>
+      </div>
+    </div>
+    <button class="dl-btn" id="dlBtn">📥 判定済みファイルをダウンロード</button>
+    <br><br>
+    <h2>旧住所検出一覧（最大50件表示）</h2>
+    <table id="previewTable">
+      <thead><tr><th>#</th><th>住所</th><th>判定理由</th></tr></thead>
+      <tbody id="previewBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// 旧住所判定マスター
+// ============================================================
+const EXTINCT_DISTRICTS = [
+  "亀田郡","上磯郡","下北郡","中津軽郡","胆沢郡","稗貫郡","東磐井郡",
+  "桃生郡","志田郡","玉造郡","河辺郡","由利郡","仙北郡","東田川郡","飽海郡",
+  "安達郡","石城郡","真壁郡","新治郡","都賀郡","上都賀郡","南那須郡",
+  "勢多郡","新田郡","佐波郡","北埼玉郡","千葉郡","海上郡","匝瑳郡",
+  "荏原郡","豊多摩郡","北豊島郡","南足立郡","南葛飾郡","北多摩郡","南多摩郡","東京府",
+  "久良岐郡","橘樹郡","都筑郡","鎌倉郡","津久井郡",
+  "北蒲原郡","中蒲原郡","南魚沼郡","婦負郡","上新川郡","東砺波郡","西砺波郡",
+  "河北郡","石川郡","足羽郡","丹生郡","今立郡","遠敷郡",
+  "東八代郡","東山梨郡","更級郡","南安曇郡",
+  "山県郡","武儀郡","益田郡","郡上郡","庵原郡","富士郡","小笠郡",
+  "愛知郡","幡豆郡","西加茂郡","東加茂郡","中島郡",
+  "志摩郡","一志郡","飯南郡","神崎郡","野洲郡","甲賀郡","栗太郡","坂田郡",
+  "中郡","竹野郡","熊野郡","東成郡","西成郡","中河内郡","北河内郡",
+  "津名郡","緑郡","三原郡","氷上郡","城崎郡","出石郡","多紀郡","添上郡",
+  "那賀郡","海草郡","気高郡","能義郡","大原郡","飯石郡",
+  "苫田郡","御津郡","邑久郡","浅口郡","真庭郡",
+  "佐伯郡","双三郡","世羅郡","都濃郡","大島郡","玖珂郡","厚狭郡","豊浦郡",
+  "麻植郡","美馬郡","三好郡","大川郡","寒川郡","三豊郡",
+  "温泉郡","周桑郡","越智郡","上浮穴郡","香美郡",
+  "嘉穂郡","八女郡","三潴郡","佐賀郡","神埼郡","小城郡",
+  "北高来郡","南高来郡","南松浦郡","飽託郡","下益城郡","宇土郡","天草郡",
+  "大分郡","大野郡","直入郡","下毛郡","宇佐郡","宮崎郡",
+  "日置郡","揖宿郡","川辺郡","南薩郡","姶良郡","宮古郡",
+];
+
+const OLD_TOWNS = [
+  // 北海道
+  "戸井町","恵山町","椴法華村","南茅部町","上磯町","阿寒町","音別町","虻田町","洞爺村","鷹栖町",
+  // 東北
+  "大畑町","川内町","脇野沢村","浪岡町","岩木町","相馬村","木造町","平賀町",
+  "水沢市","江刺市","前沢町","胆沢町","衣川村","石鳥谷町","大迫町","三陸町",
+  "河南町","河北町","雄勝町","牡鹿町","古川市","三本木町","鹿島台町","岩出山町","鳴子町","田尻町","小牛田町","南郷町",
+  "河辺町","雄和町","本荘市","大曲市","角館町","田沢湖町","西木村",
+  "藤島町","羽黒町","櫛引町","温海町",
+  "岩代町","本宮町","熱塩加納村","勿来市","内郷市","平市","常磐市","磐城市",
+  // 関東
+  "真壁町","大和村","岩瀬町","下館市","内原町","波崎町",
+  "都賀町","粟野町","今市市","藤原町","足尾町","烏山町","黒磯市",
+  "富士見村","新田町","笠懸町","鬼石町","境町",
+  "浦和市","大宮市","与野市","岩槻市","鳩ヶ谷市","上福岡市","庄和町","妻沼町","江南町","岡部町","川本町","花園町","児玉町","吉田町","荒川村","大滝村","名栗村","騎西町","北川辺町","大利根町","鷲宮町","菖蒲町","栗橋町","吹上町","川里町",
+  "関宿町","三芳村","富山町","白浜町","千倉町","丸山町","和田町","天津小湊町","大原町","岬町","夷隅町","佐原市","小見川町","栗源町","八日市場市","野栄町","海上町","飯岡町","干潟町","山武町","蓮沼村","松尾町","成東町","沼南町","本埜村","印旛村",
+  "保谷市","田無市","秋川市","五日市町","城東区","深川区","本所区","向島区","浅草区","下谷区","神田区","麹町区","日本橋区","京橋区","芝区","麻布区","赤坂区","四谷区","牛込区","淀橋区","小石川区","本郷区","滝野川区","王子区","蒲田区","荏原区",
+  "津久井町","相模湖町","城山町","藤野町","戸太町","根岸村","本牧村","神奈川町","屏風浦村","川崎町","大師町","御幸村","田島町","中原町","高津町",
+  // 中部
+  "豊栄市","新津市","亀田町","巻町","六日町","栄町","下田村",
+  "大山町","八尾町","細入村","福野町","城端町","福光町","庄川町",
+  "宇ノ気町","高松町","七塚町","松任市","野々市町","門前町",
+  "武生市","今立町","上中町",
+  "石和町","春日居町","塩山市","若草町","白根町","田富町",
+  "更埴市","戸倉町","穂高町","豊科町","四賀村","豊野町","戸隠村",
+  "高富町","萩原町","八幡町","清水市","蒲原町","富士川町","菊川町","天竜市","浜北市",
+  "一色町","吉良町","長久手町","足助町","祖父江町",
+  "阿児町","浜島町","飯南町","飯高町",
+  // 近畿
+  "八日市市","水口町","甲西町","野洲町","安土町","伊吹町",
+  "木津町","加茂町","山城町","丹波町","園部町","峰山町","大宮町",
+  "布施市","河内市","枚岡市",
+  "一宮町","東浦町","西淡町","柏原町","城崎町","出石町","篠山町",
+  "月ヶ瀬村","都祁村","榛原町","大宇陀町","西吉野村",
+  "打田町","粉河町","南部町","熊野川町",
+  // 中国
+  "気高町","鹿野町","青谷町","赤碕町","大栄町",
+  "広瀬町","大東町","木次町","桜江町",
+  "御津町","邑久町","金光町","勝山町",
+  "吉和村","宮島町","加計町","三良坂町","豊平町",
+  "新南陽市","小野田市","東和町",
+  // 四国
+  "鴨島町","脇町","池田町","宍喰町",
+  "引田町","白鳥町","津田町","豊中町","綾上町",
+  "重信町","北条市","玉川町","久万町",
+  "土佐山田町","中村市","窪川町","赤岡町","野市町",
+  // 九州
+  "山田市","黒木町","若宮町","那珂川町",
+  "諸富町","神埼町","小城町",
+  "国見町","小浜町","加津佐町","西彼町","有川町",
+  "飽田町","松橋町","本渡市","牛深市",
+  "挾間町","湯布院町","三重町","三光村","安心院町",
+  "佐土原町","田野町","清武町","須木村","北方町",
+  "川内市","伊集院町","山川町","知覧町","加世田市","串木野市",
+  "豊見城村","佐敷町","具志川市","石川市","与那城町","平良市",
+];
+
+// 旧字体
+const OLD_KANJI = /[國縣區驛濱邊澤關藏櫻龍廳]/;
+// 漢数字番地
+const KANJI_BANCHI = /[一二三四五六七八九十百千]+(番地|番)/;
+// カタカナ「ノ」区切り
+const KATAKANA_NO = /[0-9０-９]+ノ[0-9０-９]+/;
+
+function judgeOldAddress(address) {
+  if (!address || typeof address !== 'string' || !address.trim()) return { isOld: false, reason: '' };
+  const reasons = [];
+  for (const d of EXTINCT_DISTRICTS) {
+    if (address.includes(d)) reasons.push(`消滅郡名「${d}」`);
+  }
+  for (const t of OLD_TOWNS) {
+    if (address.includes(t)) reasons.push(`消滅地名「${t}」`);
+  }
+  const m = address.match(OLD_KANJI);
+  if (m) reasons.push(`旧字体「${m[0]}」`);
+  if (KANJI_BANCHI.test(address)) reasons.push('漢数字番地');
+  if (KATAKANA_NO.test(address)) reasons.push('カタカナ「ノ」区切り');
+  return { isOld: reasons.length > 0, reason: reasons.join(' / ') };
+}
+
+// ============================================================
+// UI
+// ============================================================
+let workbook = null;
+let sheetData = null;
+let fileName = '';
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); loadFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
+
+function loadFile(file) {
+  if (!file) return;
+  fileName = file.name;
+  document.getElementById('filename').textContent = '選択中: ' + fileName;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const data = new Uint8Array(e.target.result);
+    workbook = XLSX.read(data, { type: 'array' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+    // 列選択を構築
+    const select = document.getElementById('colSelect');
+    select.innerHTML = '';
+    if (sheetData.length > 0) {
+      const headers = sheetData[0];
+      headers.forEach((h, i) => {
+        const col = String.fromCharCode(65 + i);
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = `${col}列: ${h || '(空)'}`;
+        // 「住所」を含む列をデフォルト選択
+        if (String(h).includes('住所')) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+    document.getElementById('configCard').style.display = 'block';
+    document.getElementById('resultCard').style.display = 'none';
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function run() {
+  if (!sheetData) return;
+  const colIdx = parseInt(document.getElementById('colSelect').value);
+  const rows = sheetData.slice(1); // ヘッダー除く
+
+  let oldCount = 0;
+  const previewRows = [];
+  const resultData = [sheetData[0].concat(['旧住所フラグ', '判定理由'])];
+
+  rows.forEach((row, i) => {
+    const address = String(row[colIdx] || '');
+    const { isOld, reason } = judgeOldAddress(address);
+    if (isOld) oldCount++;
+    const newRow = row.concat([isOld ? 'TRUE' : 'FALSE', reason]);
+    resultData.push(newRow);
+    if (isOld && previewRows.length < 50) {
+      previewRows.push({ rowNum: i + 2, address, reason });
+    }
+  });
+
+  const total = rows.length;
+  document.getElementById('statTotal').textContent = total.toLocaleString();
+  document.getElementById('statOld').textContent = oldCount.toLocaleString();
+  document.getElementById('statOk').textContent = (total - oldCount).toLocaleString();
+
+  // プレビューテーブル
+  const tbody = document.getElementById('previewBody');
+  tbody.innerHTML = '';
+  if (previewRows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#888;padding:20px">旧住所は検出されませんでした</td></tr>';
+  } else {
+    previewRows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.rowNum}</td><td>${escHtml(r.address)}</td><td class="reason">${escHtml(r.reason)}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // ダウンロードボタン
+  document.getElementById('dlBtn').onclick = () => {
+    const ws = XLSX.utils.aoa_to_sheet(resultData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    const base = fileName.replace(/\.[^.]+$/, '');
+    XLSX.writeFile(wb, base + '_旧住所判定済.xlsx');
+  };
+
+  document.getElementById('resultCard').style.display = 'block';
+  document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth' });
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
