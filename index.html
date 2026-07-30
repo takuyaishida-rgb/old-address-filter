@@ -782,7 +782,7 @@ function normalizeAddressKey(addr) {
 
 // マスター生成物のバージョン。data/ を再生成したら必ず更新する。
 // これが無いとブラウザが古いJSONをキャッシュしたまま使い続ける。
-const DATA_VERSION = '20260730c';
+const DATA_VERSION = '20260730d';
 
 async function ensurePostalMaster(onProgress) {
   if (POSTAL_MASTER) return POSTAL_MASTER;
@@ -862,7 +862,8 @@ function lookupExtinct(address) {
   if (!candidates) candidates = all;
 
   // 郡前置パート: 都道府県・市町村を跨がない漢字/かな1〜5文字 + 郡（任意）
-  const gunOptional = '(?:(?:(?![都道府県市町村])[一-龥ぁ-ゖァ-ヺ]){1,5}郡)?';
+  // 郡名には「都」「府」が含まれうる（下都賀郡・伊都郡）。都道府県名の直後か先頭に限って許可する。
+  const gunOptional = '(?:(?:^|(?<=[都道府県]))(?:(?![県道市町村])[一-龥ぁ-ゖァ-ヺ]){1,5}郡)?';
 
   for (const e of candidates) {
     const re = new RegExp(gunOptional + escapeRegex(e.oldName));
@@ -907,7 +908,9 @@ function buildReverseIndex() {
         });
       }
     } else {
+      // 「以下に掲載がない場合」= その市区町村で町域が列挙されていない住所の正解
       entry.defaultZip = zip;
+      entry.catchAllZip = zip;
     }
   }
   for (const pref in byPref) {
@@ -1062,7 +1065,10 @@ function resolveZipWithExtinct(address, hit, resolvedName) {
   const suffix = address.slice(hit.matchEnd);
   const plain = prefix + resolvedName + suffix;
   const est = estimateZip(plain);
-  if (isZipResolved(est)) return { est, address: plain };
+  // 町域まで決まったならそれを採る。「掲載外」（市区町村の代表番号）で決まった場合は
+  // 旧町村名を町域として残した形でより細かく決まらないか試す。
+  const coarse = est.level === '市区町村（掲載外）';
+  if (isZipResolved(est) && !coarse) return { est, address: plain };
   const oldCore = hit.entry.oldName.replace(/^.+?郡/, '');
   if (!/[町村]$/.test(oldCore) || oldCore === resolvedName) return { est, address: plain };
   const bare = oldCore.replace(/[町村]$/, '');
@@ -1088,7 +1094,9 @@ function resolveZipWithExtinct(address, hit, resolvedName) {
 function isZipResolved(est) {
   if (!est || !est.zip) return false;
   if (String(est.level).includes('複数候補')) return false;
-  return /^(町域|小字)/.test(est.level) || est.level === '市区町村（町域なし）';
+  return /^(町域|小字)/.test(est.level) ||
+         est.level === '市区町村（町域なし）' ||
+         est.level === '市区町村（掲載外）';
 }
 
 function estimateZip(rawAddress) {
@@ -1108,7 +1116,7 @@ function estimateZip(rawAddress) {
               const cands = cityEntry.townCands[town] || [];
               // 候補が1つなら町域で確定
               if (cands.length <= 1) {
-                return { zip: cityEntry.townMap[town], level: '町域', matchedLen };
+                return { zip: cityEntry.townMap[town], level: '町域', matchedLen, townLen: town.length };
               }
               // 複数候補：町域名の直後に続く小字で絞る（例:「香良洲町稲葉123」→ 稲葉）
               //   小字の前に「字」「大字」が入ることがあるので外してから比較する
@@ -1122,7 +1130,7 @@ function estimateZip(rawAddress) {
                 .sort((a, b) => b.koaza.length - a.koaza.length)
                 .find(c => rest.startsWith(c.koaza));
               if (byKoaza) {
-                return { zip: byKoaza.zip, level: '小字', matchedLen: matchedLen + byKoaza.koaza.length };
+                return { zip: byKoaza.zip, level: '小字', matchedLen: matchedLen + byKoaza.koaza.length, townLen: town.length };
               }
               // 丁目の範囲で郵便番号が分かれる町域（例:「南一条西（１～１９丁目）」）
               const cho = rest.match(/^(\d{1,3})丁目/) || rest.match(/^([一二三四五六七八九十]+)丁目/);
@@ -1134,7 +1142,7 @@ function estimateZip(rawAddress) {
                 });
                 const byChome = cands.filter(c => c.chome && inRange(c.chome));
                 if (byChome.length === 1) {
-                  return { zip: byChome[0].zip, level: '町域（丁目）', matchedLen };
+                  return { zip: byChome[0].zip, level: '町域（丁目）', matchedLen, townLen: town.length };
                 }
               }
               // 方角で分かれる町域（例:「南郷通（南）」「南郷通（北）」）
@@ -1142,20 +1150,20 @@ function estimateZip(rawAddress) {
               if (sideM) {
                 const bySide = cands.filter(c => c.side === sideM[1]);
                 if (bySide.length === 1) {
-                  return { zip: bySide[0].zip, level: '町域（方角）', matchedLen };
+                  return { zip: bySide[0].zip, level: '町域（方角）', matchedLen, townLen: town.length };
                 }
               }
               // 小字が書かれていない場合、小字なしの候補が1つだけならそれが町域全体の番号
               const bare = cands.filter(c => !c.koaza);
               if (bare.length === 1) {
-                return { zip: bare[0].zip, level: '町域', matchedLen };
+                return { zip: bare[0].zip, level: '町域', matchedLen, townLen: town.length };
               }
               // 住所に小字が書かれているが列挙のどれにも当たらない場合は「その他」が該当する
               //   例:「名古屋市緑区鳴海町字坊主山」＝ 鳴海町の列挙小字に無い → その他
               if (hadAza) {
                 const other = cands.filter(c => c.koaza && c.koaza.split('|').includes('その他'));
                 if (other.length === 1) {
-                  return { zip: other[0].zip, level: '町域（その他）', matchedLen };
+                  return { zip: other[0].zip, level: '町域（その他）', matchedLen, townLen: town.length };
                 }
               }
               // それ以外は一意に決められない（候補を提示して未確定にする）
@@ -1179,7 +1187,7 @@ function estimateZip(rawAddress) {
             const town = hits[0];
             const cands = cityEntry.townCands[town] || [];
             if (cands.length <= 1) {
-              return { zip: cityEntry.townMap[town], level: '町域（部分一致）', matchedLen: base, matchedTown: town };
+              return { zip: cityEntry.townMap[town], level: '町域（部分一致）', matchedLen: base, matchedTown: town, townLen: 0 };
             }
             return {
               zip: '', level: '町域（複数候補）', matchedLen: base,
@@ -1191,12 +1199,27 @@ function estimateZip(rawAddress) {
         return null;
   };
 
-  const cityFallback = (cityEntry, city, base) => ({
-    zip: cityEntry.defaultZip,
-    // その市区町村に町域の登録が無ければ、代表番号が唯一の正解
-    level: cityEntry.townKeysDesc.length === 0 ? '市区町村（町域なし）' : '市区町村',
-    matchedLen: base,
-  });
+  // 複数の区で町域が一致した場合は最長一致を採る（「有東坂」と「有東」なら前者）。
+  // 同じ長さで並んだときだけ区を特定できないものとして扱う。
+  const pickLongest = (found) => {
+    if (!found.length) return null;
+    const max = Math.max(...found.map(f => f.hit.townLen || 0));
+    const top = found.filter(f => (f.hit.townLen || 0) === max);
+    return top.length === 1 ? top[0] : null;
+  };
+
+  const cityFallback = (cityEntry, city, base) => {
+    // 町域の登録が無い市区町村は代表番号が唯一の正解
+    if (cityEntry.townKeysDesc.length === 0) {
+      return { zip: cityEntry.defaultZip, level: '市区町村（町域なし）', matchedLen: base };
+    }
+    // 町域は登録されているが住所の町域がそこに無い場合、日本郵便の
+    // 「以下に掲載がない場合」がその住所の郵便番号にあたる
+    if (cityEntry.catchAllZip) {
+      return { zip: cityEntry.catchAllZip, level: '市区町村（掲載外）', matchedLen: base };
+    }
+    return { zip: cityEntry.defaultZip, level: '市区町村', matchedLen: base };
+  };
 
   const tryFromCity = (searchFrom, prefEntry, baseOffset, prefKnown) => {
     for (const city of prefEntry.cityKeysDesc) {
@@ -1215,8 +1238,16 @@ function estimateZip(rawAddress) {
             const h = matchTown(prefEntry.cities[w], afterCity, baseOffset + city.length);
             if (h && h.zip) found.push({ ward: w, hit: h });
           }
-          if (found.length === 1) {
-            return Object.assign({}, found[0].hit, { level: '町域（区を補正）', correctedCity: found[0].ward });
+          const bestSib = pickLongest(found);
+          if (bestSib) {
+            return Object.assign({}, bestSib.hit, { level: '町域（区を補正）', correctedCity: bestSib.ward });
+          }
+          // 同名町域が複数の区にある場合は、誤った区の代表番号に落とさず未確定にする
+          if (found.length > 1) {
+            return {
+              zip: '', level: '区が特定できない', matchedLen: baseOffset + city.length,
+              ambiguousCount: found.length, candidates: found.map(f => f.ward).slice(0, 5),
+            };
           }
         }
         return cityFallback(cityEntry, city, baseOffset + city.length);
@@ -1231,8 +1262,9 @@ function estimateZip(rawAddress) {
         const h = matchTown(prefEntry.cities[w], afterCity, baseOffset + base.length);
         if (h && h.zip) found.push({ ward: w, hit: h });
       }
-      if (found.length === 1) {
-        return Object.assign({}, found[0].hit, { level: '町域（区を補完）', correctedCity: found[0].ward });
+      const best = pickLongest(found);
+      if (best) {
+        return Object.assign({}, best.hit, { level: '町域（区を補完）', correctedCity: best.ward });
       }
       if (found.length > 1) {
         return {
