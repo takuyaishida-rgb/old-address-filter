@@ -100,6 +100,37 @@ KOAZA_RE = re.compile(r"（([^）]*)")
 KOAZA_NOISE = re.compile(r"(丁目|番地|地割|以外|を除く|次のビル|・|〜|～|、|全域|無番地)")
 
 
+# 括弧内の丁目指定を取り出す。「南一条西（１～１９丁目）」のように、同じ町域名が
+# 丁目の範囲で別の郵便番号に分かれるケースを一意化するために使う。
+ZEN2HAN = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def extract_chome(town_raw: str) -> str:
+    """丁目の範囲を "1-19" / "3,4" 形式で返す（無ければ空文字）"""
+    m = KOAZA_RE.search(town_raw or "")
+    if not m:
+        return ""
+    body = m.group(1).translate(ZEN2HAN).replace("〜", "～")
+    if "丁目" not in body:
+        return ""
+    parts = []
+    for a, b in re.findall(r"(\d+)～(\d+)丁目", body):
+        parts.append(f"{a}-{b}")
+    # 範囲に含まれない単独指定（「３丁目」「４丁目１～２番」など）
+    for n in re.findall(r"(?<![\d～])(\d+)丁目", body):
+        parts.append(n)
+    return ",".join(dict.fromkeys(parts))
+
+
+def extract_side(town_raw: str) -> str:
+    """「南郷通（南）」のような方角指定を返す（無ければ空文字）"""
+    m = KOAZA_RE.search(town_raw or "")
+    if not m:
+        return ""
+    body = m.group(1).strip()
+    return body if body in ("南", "北", "東", "西") else ""
+
+
 def extract_koaza(town_raw: str) -> list:
     m = KOAZA_RE.search(town_raw or "")
     if not m:
@@ -158,10 +189,23 @@ def parse_rows(csv_text: str, old_towns: list):
             merged = [k for k in ([prev] if prev else []) + koaza if k]
             if merged:
                 postal[zipcode]["koaza"] = "|".join(dict.fromkeys(merged))
+            # 1つの郵便番号が複数の町域をカバーすることがある（例: 喜茂別町の上尻別と鈴川）。
+            # 町域名を上書きすると住所→郵便番号の逆引きで引けなくなるため、alt に退避する。
+            if town and town != postal[zipcode]["town"]:
+                alt = postal[zipcode].get("alt", [])
+                if town not in alt:
+                    alt.append(town)
+                    postal[zipcode]["alt"] = alt
         else:
             postal[zipcode] = {"pref": pref, "city": city, "town": town}
             if koaza:
                 postal[zipcode]["koaza"] = koaza[0]
+            chome = extract_chome(town_raw)
+            if chome:
+                postal[zipcode]["chome"] = chome
+            side = extract_side(town_raw)
+            if side:
+                postal[zipcode]["side"] = side
 
         # OLD_TOWNS conflict 判定：町域名が OLD_TOWNS のいずれかに等しい or 前方一致
         # 例: ken_all に "焼津市 / 栄町六丁目" → "焼津市|栄町" を conflict に追加

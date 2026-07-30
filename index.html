@@ -568,6 +568,20 @@ function normalizePlace(s) {
   return s ? String(s).replace(JP_PLACE_VARIANT_RE, c => JP_PLACE_VARIANTS[c] || c) : s;
 }
 
+// 全角数字 → 半角（1文字→1文字なので位置はずれない）
+// 日本郵便の町域名は「７条通」「南１条通」のように全角数字を使う
+function toHalfWidthDigits(s) {
+  return s ? String(s).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)) : s;
+}
+
+// 漢数字 → 数値（1〜99。「二十三」→23）
+function kanjiToNum(s) {
+  const d = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  const m = String(s || '').match(/^([一二三四五六七八九]?)十([一二三四五六七八九]?)$/);
+  if (m) return (m[1] ? d[m[1]] : 1) * 10 + (m[2] ? d[m[2]] : 0);
+  return d[s] || 0;
+}
+
 // 日本郵便マスターから生成された現行の郡・市セット（cities.js で window に設定）
 // マスター側の名称も異体字を寄せた形を併せて持つ（入力がどちらの字でも現行名と判定できるように）
 function withNormalized(list) {
@@ -768,7 +782,7 @@ function normalizeAddressKey(addr) {
 
 // マスター生成物のバージョン。data/ を再生成したら必ず更新する。
 // これが無いとブラウザが古いJSONをキャッシュしたまま使い続ける。
-const DATA_VERSION = '20260730';
+const DATA_VERSION = '20260730c';
 
 async function ensurePostalMaster(onProgress) {
   if (POSTAL_MASTER) return POSTAL_MASTER;
@@ -872,17 +886,26 @@ function buildReverseIndex() {
     // 異体字はマスター側も入力側も同じ字に寄せる（例: 倶/俱、髙/高、舘/館）
     const pref = normalizePlace(POSTAL_MASTER[zip].pref);
     const city = normalizePlace(POSTAL_MASTER[zip].city);
-    const town = normalizePlace(POSTAL_MASTER[zip].town);
+    // 町域名の全角数字は半角に寄せる（旭川市「７条通」など）
+    const town = toHalfWidthDigits(normalizePlace(POSTAL_MASTER[zip].town));
     if (!byPref[pref]) byPref[pref] = { cities: {} };
     if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, townCands: {}, defaultZip: zip };
     const entry = byPref[pref].cities[city];
-    if (town) {
+    // 1つの郵便番号が複数の町域をカバーする場合、2つ目以降は alt に入っている
+    const towns = [town].concat((POSTAL_MASTER[zip].alt || [])
+      .map(t => toHalfWidthDigits(normalizePlace(t)))).filter(Boolean);
+    if (towns.length) {
       // 同じ町域名に複数の郵便番号がある（小字で分かれる）ため、候補を全部持つ。
       // 小字は「香良洲町（稲葉）」の括弧内で、複数候補を一意に決める唯一の手がかり。
-      if (entry.townMap[town] === undefined) entry.townMap[town] = zip;
-      (entry.townCands[town] = entry.townCands[town] || []).push({
-        zip, koaza: normalizePlace(POSTAL_MASTER[zip].koaza || ''),
-      });
+      for (const t of towns) {
+        if (entry.townMap[t] === undefined) entry.townMap[t] = zip;
+        (entry.townCands[t] = entry.townCands[t] || []).push({
+          zip,
+          koaza: normalizePlace(POSTAL_MASTER[zip].koaza || ''),
+          chome: POSTAL_MASTER[zip].chome || '',   // "1-19" / "3,4"
+          side: POSTAL_MASTER[zip].side || '',     // 南 / 北 / 東 / 西
+        });
+      }
     } else {
       entry.defaultZip = zip;
     }
@@ -961,6 +984,13 @@ function townMatchVariants(afterCity) {
       return k ? k + '条' : all;
     });
     if (conv !== s) add(conv, delta + (s.length - conv.length));
+    // 逆方向。マスターが算用数字を使う町域（旭川市「７条通」など）に合わせる
+    //   例:「七条通十三丁目」→「7条通13丁目」
+    const digit = s.replace(/([一二三四五六七八九十]+)(条通|条|丁目)/g, (all, k, suf) => {
+      const n = kanjiToNum(k);
+      return n ? n + suf : all;
+    });
+    if (digit !== s) add(digit, delta + (s.length - digit.length));
     const ke = s.replace(/ヶ/g, 'ケ');
     if (ke !== s) add(ke, delta);
   };
@@ -974,6 +1004,10 @@ function townMatchVariants(afterCity) {
       expand(b, delta0);
       const aza = b.match(/^(大字|字)/);
       if (aza) expand(b.slice(aza[0].length), delta0 + aza[0].length);
+      // 合併後の町域名は旧村名を含み「村」「字」を挟まない形になることがある
+      //   例:「大字歌登村字上幌別六線」→ 町域「歌登上幌別」
+      const packed = b.replace(/^大字/, '').replace(/村字/g, '').replace(/^字/, '');
+      if (packed !== b) expand(packed, delta0 + (b.length - packed.length));
     }
   }
   return out;
@@ -987,6 +1021,67 @@ function leadingPlaceToken(s) {
   t = t.split('字')[0];
   t = t.replace(/(丁目|番地|番|号|大字).*$/, '');
   return t.trim().slice(0, 8);
+}
+
+// 旧住所を現行の市区町村に置き換えた候補文字列を作る。
+//   合併では旧町村名が新しい町域名の一部として残ることが多い。
+//   例: 旧「南牟婁郡鵜殿村1573」→ 現「紀宝町鵜殿1573」（町域「鵜殿」）
+//       旧「伊都郡高野口町大字田原」→ 現「橋本市高野口町田原」（町域「高野口町田原」）
+//   そのため「市区町村だけ置換した形」と「旧町村名を町域として残した形」の両方を試す。
+// 旧住所から郵便番号を解決する。市区町村だけ置換した形で決まらなければ、
+// 旧町村名を町域として残した形を試す。ただし別の町域を掴む誤りを避けるため、
+// 得られた町域名が旧町村名と整合することを確認してから採用する。
+//   採用: 「鵜殿村」→ 町域「鵜殿」／「西枇杷島町」→ 町域「西枇杷島町泉」
+//   却下: 「三方町黒田」→ 町域「三方」（直後が「町」で名前を途中で切っている）
+//         「上湧別町字中湧別」→ 町域「上湧別屯田市街地」（別の町域）
+//         「相模原市」など旧“市”は町域名にならない
+// 旧市町村マップの newName を、現行マスターに載っている名称まで解決する（段階合併のチェーン）
+function resolveExtinctName(hit) {
+  if (!hit) return '';
+  let name = hit.entry.newName;
+  let repZip = hit.entry.representativeZip;
+  const seen = new Set();
+  while (name && !citySetHas(name) && EXTINCT_INDEX && EXTINCT_INDEX.byOldName) {
+    if (seen.has(name)) break;
+    seen.add(name);
+    const next = EXTINCT_INDEX.byOldName[name];
+    if (!next || !next.newName || next.newName === name) break;
+    name = next.newName;
+    if (next.representativeZip) repZip = next.representativeZip;
+  }
+  if (repZip && POSTAL_MASTER && POSTAL_MASTER[repZip]) {
+    const ref = POSTAL_MASTER[repZip];
+    if (ref.city && ref.city.startsWith(name) && ref.city.length > name.length) name = ref.city;
+  }
+  return name;
+}
+
+function resolveZipWithExtinct(address, hit, resolvedName) {
+  if (!hit) return null;
+  const prefix = address.slice(0, hit.matchStart);
+  const suffix = address.slice(hit.matchEnd);
+  const plain = prefix + resolvedName + suffix;
+  const est = estimateZip(plain);
+  if (isZipResolved(est)) return { est, address: plain };
+  const oldCore = hit.entry.oldName.replace(/^.+?郡/, '');
+  if (!/[町村]$/.test(oldCore) || oldCore === resolvedName) return { est, address: plain };
+  const bare = oldCore.replace(/[町村]$/, '');
+  // 旧町村名の後ろに町域名が続く住所では、挿入した町村名自体を町域として掴む誤りが起きる。
+  //   例:「三方町黒田」で「三方」を町域として拾ってしまう（正しくは上黒田／東黒田）
+  // そのため町村名だけを挿入する候補は、後ろが番地から始まる住所に限る。
+  const tail = suffix.replace(/^(大字|字)/, '');
+  const cands = [prefix + resolvedName + oldCore + suffix];
+  if (/^[\d０-９]/.test(tail)) cands.push(prefix + resolvedName + bare + suffix);
+  for (const cand of cands) {
+    const e = estimateZip(cand);
+    if (!isZipResolved(e)) continue;
+    const town = normalizePlace((POSTAL_MASTER[e.zip] || {}).town || '');
+    const nextCh = cand.charAt(e.matchedLen || 0);
+    if (town.startsWith(oldCore) || (town === bare && nextCh !== '町' && nextCh !== '村')) {
+      return { est: e, address: cand };
+    }
+  }
+  return { est, address: plain };
 }
 
 // 郵便番号が一意に決まったか（レベル名は補完・補正の経路によって増えるためまとめて判定する）
@@ -1018,7 +1113,9 @@ function estimateZip(rawAddress) {
               // 複数候補：町域名の直後に続く小字で絞る（例:「香良洲町稲葉123」→ 稲葉）
               //   小字の前に「字」「大字」が入ることがあるので外してから比較する
               //   例:「名古屋市緑区鳴海町字坊主山118番地」→ 小字「坊主山」
-              const rest = v.s.slice(town.length).replace(/^(大字|字)/, '');
+              const restRaw = v.s.slice(town.length);
+              const hadAza = /^(大字|字)/.test(restRaw);
+              const rest = restRaw.replace(/^(大字|字)/, '');
               const byKoaza = cands
                 .filter(c => c.koaza && c.koaza !== 'その他')
                 .flatMap(c => c.koaza.split('|').map(k => ({ zip: c.zip, koaza: k })))
@@ -1027,10 +1124,39 @@ function estimateZip(rawAddress) {
               if (byKoaza) {
                 return { zip: byKoaza.zip, level: '小字', matchedLen: matchedLen + byKoaza.koaza.length };
               }
+              // 丁目の範囲で郵便番号が分かれる町域（例:「南一条西（１～１９丁目）」）
+              const cho = rest.match(/^(\d{1,3})丁目/) || rest.match(/^([一二三四五六七八九十]+)丁目/);
+              if (cho) {
+                const n = /^\d+$/.test(cho[1]) ? parseInt(cho[1], 10) : kanjiToNum(cho[1]);
+                const inRange = (spec) => spec.split(',').some(p => {
+                  const r = p.split('-');
+                  return r.length === 2 ? (n >= +r[0] && n <= +r[1]) : n === +r[0];
+                });
+                const byChome = cands.filter(c => c.chome && inRange(c.chome));
+                if (byChome.length === 1) {
+                  return { zip: byChome[0].zip, level: '町域（丁目）', matchedLen };
+                }
+              }
+              // 方角で分かれる町域（例:「南郷通（南）」「南郷通（北）」）
+              const sideM = rest.match(/^[\d一二三四五六七八九十]{0,3}丁目([南北東西])/) || rest.match(/([南北東西])\s*$/);
+              if (sideM) {
+                const bySide = cands.filter(c => c.side === sideM[1]);
+                if (bySide.length === 1) {
+                  return { zip: bySide[0].zip, level: '町域（方角）', matchedLen };
+                }
+              }
               // 小字が書かれていない場合、小字なしの候補が1つだけならそれが町域全体の番号
               const bare = cands.filter(c => !c.koaza);
               if (bare.length === 1) {
                 return { zip: bare[0].zip, level: '町域', matchedLen };
+              }
+              // 住所に小字が書かれているが列挙のどれにも当たらない場合は「その他」が該当する
+              //   例:「名古屋市緑区鳴海町字坊主山」＝ 鳴海町の列挙小字に無い → その他
+              if (hadAza) {
+                const other = cands.filter(c => c.koaza && c.koaza.split('|').includes('その他'));
+                if (other.length === 1) {
+                  return { zip: other[0].zip, level: '町域（その他）', matchedLen };
+                }
               }
               // それ以外は一意に決められない（候補を提示して未確定にする）
               return {
@@ -1128,8 +1254,9 @@ function estimateZip(rawAddress) {
       if (prefKnown ? idx > 6 : idx !== 0) continue;
       const afterCity = searchFrom.slice(idx + gunless.length);
       const h = matchTown(prefEntry.cities[city], afterCity, baseOffset + idx + gunless.length);
-      // 町域まで一致したときだけ採用する（代表番号での取りこぼし埋めはしない）
       if (h && h.zip) return Object.assign({}, h, { level: h.level + '（郡を補完）' });
+      // 町域が決まらない場合も、市区町村までは判明したので代表番号を理由として返す
+      return cityFallback(prefEntry.cities[city], city, baseOffset + idx + gunless.length);
     }
     return null;
   };
@@ -1325,14 +1452,17 @@ function loadFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
-// ヘッダー行の推定：先頭20行のうち、値が2つ以上入っている最初の行
+// ヘッダー行の推定：先頭20行のうち、値が入っているセルが最も多い行。
+//   「マニュアル→ URL」のような案内行を誤ってヘッダーと判定しないよう、
+//   最初に2つ以上埋まっている行ではなく最大値で選ぶ（同数なら上の行）。
 function guessHeaderRow(rows) {
   const limit = Math.min(rows.length, 20);
+  let best = 0, bestCount = 0;
   for (let i = 0; i < limit; i++) {
     const filled = rows[i].filter(c => String(c).trim() !== '').length;
-    if (filled >= 2) return i;
+    if (filled > bestCount) { best = i; bestCount = filled; }
   }
-  return 0;
+  return bestCount >= 2 ? best : 0;
 }
 
 function selectSheet(name) {
@@ -1484,10 +1614,17 @@ async function run() {
     }
 
     // 住所→郵便番号の推定
-    let est = null, extHit = null;
+    let est = null, extHit = null, convertedForZip = '';
     if (address && (doZip || convertOld || geocode || dedup)) {
       est = estimateZip(address);
-      if (!est.zip && (convertOld || geocode || dedup || doZip)) extHit = lookupExtinct(address);
+      if (!isZipResolved(est)) {
+        extHit = lookupExtinct(address);
+        // 旧住所なら現行住所に置き換えて取り直す（旧町村名が町域名に残る形も試す）
+        if (extHit) {
+          const rz = resolveZipWithExtinct(address, extHit, resolveExtinctName(extHit));
+          if (rz && isZipResolved(rz.est)) { est = rz.est; convertedForZip = rz.address; }
+        }
+      }
     }
 
     // 下流（現行住所・緯度経度・重複）で使う郵便番号
@@ -1503,7 +1640,7 @@ async function run() {
       } else if (est && isZipResolved(est)) {
         // 町域まで一致（小字で絞れた／区や郡を補った／部分一致で一意だった場合を含む）
         cZipFilled++;
-        extras.push(formatZip(est.zip), est.level, '');
+        extras.push(formatZip(est.zip), convertedForZip ? est.level + '（旧住所を変換）' : est.level, '');
       } else if (est && est.level === '区が特定できない') {
         const r = `複数の区に同じ町域があり区を特定できません（${(est.candidates || []).join('・')}）`;
         extras.push('', est.level, r);
@@ -1549,24 +1686,9 @@ async function run() {
         current = buildCurrentAddress(address, usableZip, est.matchedLen);
       }
       if (isOld && !current && extHit) {
-        const prefix = address.slice(0, extHit.matchStart);
-        const suffix = address.slice(extHit.matchEnd);
-        let newName = extHit.entry.newName;
-        let repZip = extHit.entry.representativeZip;
-        const seen = new Set();
-        while (newName && !citySetHas(newName) && EXTINCT_INDEX && EXTINCT_INDEX.byOldName) {
-          if (seen.has(newName)) break;
-          seen.add(newName);
-          const next = EXTINCT_INDEX.byOldName[newName];
-          if (!next || !next.newName || next.newName === newName) break;
-          newName = next.newName;
-          if (next.representativeZip) repZip = next.representativeZip;
-        }
-        if (repZip && POSTAL_MASTER && POSTAL_MASTER[repZip]) {
-          const ref = POSTAL_MASTER[repZip];
-          if (ref.city && ref.city.startsWith(newName) && ref.city.length > newName.length) newName = ref.city;
-        }
-        current = prefix + newName + suffix;
+        // 郵便番号の解決で使った変換結果があればそれを使う（旧町村名を町域に残した形を含む）
+        current = convertedForZip ||
+          (address.slice(0, extHit.matchStart) + resolveExtinctName(extHit) + address.slice(extHit.matchEnd));
       }
       if (isOld && !current) {
         const wh = detectExtinctTokyoWard(address);
