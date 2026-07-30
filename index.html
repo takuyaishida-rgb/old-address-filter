@@ -1290,9 +1290,17 @@ function checkZipMatch(address, rawZip) {
   if (!z || z.length !== 7) return { state: 'none', text: '' };
   const ref = POSTAL_MASTER ? POSTAL_MASTER[z] : null;
   if (!ref) return { state: 'bad', text: `マスターに存在しない郵便番号（${formatZip(z)}）` };
-  if (address.includes(ref.city)) return { state: 'ok', text: '一致' };
-  const gun = ref.city.match(/^(.+郡)(.+)$/);
-  if (gun && address.includes(gun[2])) return { state: 'ok', text: '一致' };
+  // 異体字を寄せてから比較する（例: マスターの「宝塚市」は塚がU+FA10のことがある）
+  const addr = normalizePlace(address);
+  const city = normalizePlace(ref.city);
+  if (addr.includes(city)) return { state: 'ok', text: '一致' };
+  const gun = city.match(/^(.+郡)(.+)$/);
+  if (gun && addr.includes(gun[2])) return { state: 'ok', text: '一致' };
+  // 政令市の区が住所側で省略されているだけなら郵便番号は正しい
+  const seirei = city.match(/^(.+市)(.+区)$/);
+  if (seirei && addr.includes(seirei[1])) {
+    return { state: 'ok', text: `一致（住所に区の記載なし: ${ref.city}）` };
+  }
   return { state: 'bad', text: `住所と不一致（郵便番号→${ref.pref}${ref.city}）` };
 }
 
