@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>郵便番号・旧住所フィルター</title>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-<script src="data/cities.js"></script>
+<script src="data/cities.js?v=20260730"></script>
 <style>
   /* ============================================================
      Design system: docs/DESIGN_SYSTEM.md
@@ -317,6 +317,7 @@
         詳細オプション
       </summary>
       <div class="body">
+        <label class="check" id="optCityZip"><input type="checkbox" id="cityZipCheck">町域を特定できない行を市区町村の代表番号で埋める <span class="sub">郵便物は届くが町域単位の精度は落ちる</span></label>
         <label class="check" id="optConvert"><input type="checkbox" id="convertCheck">現行住所（推定）を別列に追記する</label>
         <label class="check"><input type="checkbox" id="geocodeCheck">緯度経度・地図URLを追記する <span class="sub">地理データ約12MBを追加読み込み</span></label>
         <label class="check"><input type="checkbox" id="dedupCheck">表記ゆれを正規化して重複を検出する</label>
@@ -738,10 +739,14 @@ function normalizeAddressKey(addr) {
   return s;
 }
 
+// マスター生成物のバージョン。data/ を再生成したら必ず更新する。
+// これが無いとブラウザが古いJSONをキャッシュしたまま使い続ける。
+const DATA_VERSION = '20260730';
+
 async function ensurePostalMaster(onProgress) {
   if (POSTAL_MASTER) return POSTAL_MASTER;
   if (onProgress) onProgress('郵便番号マスターを読み込み中...（初回のみ数秒）');
-  const resp = await fetch('data/postal_master.json');
+  const resp = await fetch('data/postal_master.json?v=' + DATA_VERSION);
   if (!resp.ok) throw new Error('postal_master.json の読み込みに失敗しました');
   POSTAL_MASTER = await resp.json();
   if (onProgress) onProgress('');
@@ -751,7 +756,7 @@ async function ensurePostalMaster(onProgress) {
 async function ensureGeocoding(onProgress) {
   if (GEOCODING) return GEOCODING;
   if (onProgress) onProgress('地理データ（緯度経度）を読み込み中...（初回のみ数秒）');
-  const resp = await fetch('data/geocoding.json');
+  const resp = await fetch('data/geocoding.json?v=' + DATA_VERSION);
   if (!resp.ok) throw new Error('geocoding.json の読み込みに失敗しました');
   GEOCODING = await resp.json();
   if (onProgress) onProgress('');
@@ -779,7 +784,7 @@ function geocodeFromZip(zipcode) {
 async function ensureExtinctMap(onProgress) {
   if (EXTINCT_INDEX) return EXTINCT_INDEX;
   if (onProgress) onProgress('旧市町村マップを読み込み中...');
-  const resp = await fetch('data/extinct_municipalities.json');
+  const resp = await fetch('data/extinct_municipalities.json?v=' + DATA_VERSION);
   if (!resp.ok) throw new Error('extinct_municipalities.json の読み込みに失敗しました');
   const arr = await resp.json();
   const byPref = {};
@@ -839,13 +844,15 @@ function buildReverseIndex() {
   for (const zip in POSTAL_MASTER) {
     const { pref, city, town } = POSTAL_MASTER[zip];
     if (!byPref[pref]) byPref[pref] = { cities: {} };
-    if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, ambiguous: {}, defaultZip: zip };
+    if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, townCands: {}, defaultZip: zip };
     const entry = byPref[pref].cities[city];
     if (town) {
-      // 同じ町域名に複数の郵便番号がある（番地・小字で分かれる）場合は一意に決められない。
-      // 黙って片方を採用すると誤りに気づけないため、候補数を記録して未確定として扱う。
+      // 同じ町域名に複数の郵便番号がある（小字で分かれる）ため、候補を全部持つ。
+      // 小字は「香良洲町（稲葉）」の括弧内で、複数候補を一意に決める唯一の手がかり。
       if (entry.townMap[town] === undefined) entry.townMap[town] = zip;
-      else if (entry.townMap[town] !== zip) entry.ambiguous[town] = (entry.ambiguous[town] || 1) + 1;
+      (entry.townCands[town] = entry.townCands[town] || []).push({
+        zip, koaza: POSTAL_MASTER[zip].koaza || '',
+      });
     } else {
       entry.defaultZip = zip;
     }
@@ -951,16 +958,42 @@ function estimateZip(address) {
         for (const v of townMatchVariants(afterCity)) {
           for (const town of cityEntry.townKeysDesc) {
             if (v.s.startsWith(town)) {
+              const matchedLen = baseOffset + city.length + v.delta + town.length;
+              const cands = cityEntry.townCands[town] || [];
+              // 候補が1つなら町域で確定
+              if (cands.length <= 1) {
+                return { zip: cityEntry.townMap[town], level: '町域', matchedLen };
+              }
+              // 複数候補：町域名の直後に続く小字で絞る（例:「香良洲町稲葉123」→ 稲葉）
+              const rest = v.s.slice(town.length);
+              const byKoaza = cands
+                .filter(c => c.koaza && c.koaza !== 'その他')
+                .flatMap(c => c.koaza.split('|').map(k => ({ zip: c.zip, koaza: k })))
+                .sort((a, b) => b.koaza.length - a.koaza.length)
+                .find(c => rest.startsWith(c.koaza));
+              if (byKoaza) {
+                return { zip: byKoaza.zip, level: '小字', matchedLen: matchedLen + byKoaza.koaza.length };
+              }
+              // 小字が書かれていない場合、小字なしの候補が1つだけならそれが町域全体の番号
+              const bare = cands.filter(c => !c.koaza);
+              if (bare.length === 1) {
+                return { zip: bare[0].zip, level: '町域', matchedLen };
+              }
+              // それ以外は一意に決められない（候補を提示して未確定にする）
               return {
-                zip: cityEntry.townMap[town],
-                level: '町域',
-                ambiguousCount: cityEntry.ambiguous[town] || 0,
-                matchedLen: baseOffset + city.length + v.delta + town.length,
+                zip: '', level: '町域（複数候補）', matchedLen,
+                ambiguousCount: cands.length,
+                candidates: cands.map(c => c.koaza).filter(Boolean).slice(0, 5),
               };
             }
           }
         }
-        return { zip: cityEntry.defaultZip, level: '市区町村', matchedLen: baseOffset + city.length };
+        return {
+          zip: cityEntry.defaultZip,
+          // その市区町村に町域の登録が無ければ、代表番号が唯一の正解
+          level: cityEntry.townKeysDesc.length === 0 ? '市区町村（町域なし）' : '市区町村',
+          matchedLen: baseOffset + city.length,
+        };
       }
     }
     return null;
@@ -1104,8 +1137,11 @@ $('modeSeg').addEventListener('click', e => {
 
 function applyMode() {
   const legacy = (mode === 'legacy' || mode === 'both');
+  const zip = (mode === 'zip' || mode === 'both');
   $('optConvert').style.display = legacy ? 'block' : 'none';
   if (!legacy) $('convertCheck').checked = false;
+  $('optCityZip').style.display = zip ? 'block' : 'none';
+  if (!zip) $('cityZipCheck').checked = false;
 }
 
 function formatZip(z) {
@@ -1236,6 +1272,7 @@ async function run() {
   const doZip = (mode === 'zip' || mode === 'both');
   const doLegacy = (mode === 'legacy' || mode === 'both');
   const convertOld = doLegacy && $('convertCheck').checked;
+  const fillWithCityZip = doZip && $('cityZipCheck').checked;
   const geocode = $('geocodeCheck').checked;
   const dedup = $('dedupCheck').checked;
   const hasZipCol = zipColIdx >= 0;
@@ -1320,18 +1357,25 @@ async function run() {
       if (!address) {
         extras.push('', '不明', '住所が空欄');
         pendings.push('住所が空欄');
-      } else if (est && est.level === '町域' && est.ambiguousCount) {
-        // 町域名までは一致したが、番地・小字で郵便番号が分かれるため一意に決まらない
-        const r = `番地・小字で郵便番号が分かれる町域（候補${est.ambiguousCount}件）`;
+      } else if (est && (est.level === '町域' || est.level === '小字' || est.level === '市区町村（町域なし）')) {
+        // 町域まで一致（小字で絞れた場合と、町域の登録が無く代表番号が唯一の正解の場合を含む）
+        cZipFilled++;
+        extras.push(formatZip(est.zip), est.level, '');
+      } else if (est && est.level === '町域（複数候補）') {
+        // 町域名は一致したが小字で郵便番号が分かれ、住所に小字が書かれていない
+        const list = est.candidates && est.candidates.length ? `： ${est.candidates.join('・')}など` : '';
+        const r = `小字で郵便番号が分かれる町域（候補${est.ambiguousCount}件${list}）`;
         extras.push('', '町域（複数候補）', r);
         pendings.push(r);
-      } else if (est && est.level === '町域') {
-        cZipFilled++;
-        extras.push(formatZip(est.zip), '町域', '');
       } else if (est && est.level === '市区町村' && est.zip) {
         const rep = formatZip(est.zip);
-        extras.push('', '市区町村', `町域を特定できず（市区町村代表: ${rep}）`);
-        pendings.push(`町域を特定できず（市区町村代表: ${rep}）`);
+        if (fillWithCityZip) {
+          cZipFilled++;
+          extras.push(rep, '市区町村（代表）', '町域を特定できず市区町村代表で補完');
+        } else {
+          extras.push('', '市区町村', `町域を特定できず（市区町村代表: ${rep}）`);
+          pendings.push(`町域を特定できず（市区町村代表: ${rep}）`);
+        }
       } else if (extHit && extHit.entry.representativeZip) {
         const rep = formatZip(extHit.entry.representativeZip);
         extras.push('', '旧市町村マップ', `旧住所のため現行の町域を特定できず（旧市町村代表: ${rep}）`);

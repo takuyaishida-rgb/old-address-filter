@@ -93,6 +93,23 @@ def clean_town(town: str) -> str:
     return t.strip()
 
 
+# 括弧内の小字名を取り出す。同じ町域名に複数の郵便番号があるとき、
+# これが唯一の識別子になるため捨てずに保持する（例:「香良洲町（稲葉）」→ 稲葉）。
+KOAZA_RE = re.compile(r"（([^）]*)")
+# 小字ではない注記（範囲指定・除外条件など）は識別に使えないので落とす
+KOAZA_NOISE = re.compile(r"(丁目|番地|地割|以外|を除く|次のビル|・|〜|～|、|全域|無番地)")
+
+
+def extract_koaza(town_raw: str) -> list:
+    m = KOAZA_RE.search(town_raw or "")
+    if not m:
+        return []
+    body = m.group(1).strip()
+    if not body or KOAZA_NOISE.search(body):
+        return []
+    return [body]
+
+
 # 郡表記「〇〇郡××町」→ 郡名「〇〇郡」と町村名「××町」を分離
 GUN_RE = re.compile(r"^(.+?郡)(.+)$")
 # 政令指定都市表記「〇〇市××区」→ 市名「〇〇市」と区名「××区」を分離
@@ -134,7 +151,17 @@ def parse_rows(csv_text: str, old_towns: list):
             if sm:
                 city_set.add(sm.group(1))
 
-        postal[zipcode] = {"pref": pref, "city": city, "town": town}
+        # 同一 zipcode が複数行に分かれる（町域名の続き）ことがあるため、小字は追記していく
+        koaza = extract_koaza(town_raw)
+        if zipcode in postal:
+            prev = postal[zipcode].get("koaza", "")
+            merged = [k for k in ([prev] if prev else []) + koaza if k]
+            if merged:
+                postal[zipcode]["koaza"] = "|".join(dict.fromkeys(merged))
+        else:
+            postal[zipcode] = {"pref": pref, "city": city, "town": town}
+            if koaza:
+                postal[zipcode]["koaza"] = koaza[0]
 
         # OLD_TOWNS conflict 判定：町域名が OLD_TOWNS のいずれかに等しい or 前方一致
         # 例: ken_all に "焼津市 / 栄町六丁目" → "焼津市|栄町" を conflict に追加
