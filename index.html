@@ -551,9 +551,32 @@ function splitAddressAndBuilding(text) {
   return { address: text.slice(0, end), building: text.slice(end) };
 }
 
+// 地名に現れる異体字の対応表（1文字→1文字。文字数が変わらないため位置情報が保てる）
+//   入力とマスターの両方を同じ字に寄せてから照合する。
+//   例: 入力「俱知安町」(U+4FF1) と 日本郵便「倶知安町」(U+5036) は別の文字。
+const JP_PLACE_VARIANTS = {
+  '俱':'倶','髙':'高','﨑':'崎','濵':'浜','濱':'浜','邉':'辺','邊':'辺','曾':'曽',
+  '眞':'真','德':'徳','瀨':'瀬','齋':'斎','齊':'斉','澤':'沢','國':'国','縣':'県',
+  '區':'区','驛':'駅','關':'関','櫻':'桜','龍':'竜','廳':'庁','藏':'蔵','圓':'円',
+  '舘':'館','嶋':'島','嶌':'島','峯':'峰','栁':'柳','靑':'青','檜':'桧',
+  '塚':'塚',  // 塚（互換漢字）→ 塚
+    // 﨑 → 崎
+  'ヶ':'ケ',
+};
+const JP_PLACE_VARIANT_RE = new RegExp('[' + Object.keys(JP_PLACE_VARIANTS).join('') + ']', 'g');
+function normalizePlace(s) {
+  return s ? String(s).replace(JP_PLACE_VARIANT_RE, c => JP_PLACE_VARIANTS[c] || c) : s;
+}
+
 // 日本郵便マスターから生成された現行の郡・市セット（cities.js で window に設定）
-const CURRENT_GUNS = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.currentGuns) || []);
-const CURRENT_CITIES = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.currentCities) || []);
+// マスター側の名称も異体字を寄せた形を併せて持つ（入力がどちらの字でも現行名と判定できるように）
+function withNormalized(list) {
+  const s = new Set(list || []);
+  for (const x of list || []) s.add(normalizePlace(x));
+  return s;
+}
+const CURRENT_GUNS = withNormalized((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.currentGuns) || []);
+const CURRENT_CITIES = withNormalized((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.currentCities) || []);
 // 旧市・旧郡セット（extinct_municipalities.json 由来、build script で生成）
 const EXTINCT_CITIES_DICT = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.extinctCities) || []);
 const EXTINCT_GUNS_DICT = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.extinctGuns) || []);
@@ -570,6 +593,10 @@ function nameVariants(name) {
   v.add(nk);
   v.add(nk.replace(/ヶ/g, 'ケ'));
   v.add(nk.replace(/ケ/g, 'ヶ'));
+  // 地名の異体字（俱/倶、髙/高 など）を寄せた形も現行名として扱う
+  const np = normalizePlace(name);
+  v.add(np);
+  v.add(np.replace(/ケ/g, 'ヶ'));
   return [...v];
 }
 function citySetHas(name)    { return nameVariants(name).some(v => CURRENT_CITIES.has(v)); }
@@ -842,7 +869,10 @@ function buildReverseIndex() {
   if (REVERSE_INDEX) return REVERSE_INDEX;
   const byPref = {};
   for (const zip in POSTAL_MASTER) {
-    const { pref, city, town } = POSTAL_MASTER[zip];
+    // 異体字はマスター側も入力側も同じ字に寄せる（例: 倶/俱、髙/高、舘/館）
+    const pref = normalizePlace(POSTAL_MASTER[zip].pref);
+    const city = normalizePlace(POSTAL_MASTER[zip].city);
+    const town = normalizePlace(POSTAL_MASTER[zip].town);
     if (!byPref[pref]) byPref[pref] = { cities: {} };
     if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, townCands: {}, defaultZip: zip };
     const entry = byPref[pref].cities[city];
@@ -851,7 +881,7 @@ function buildReverseIndex() {
       // 小字は「香良洲町（稲葉）」の括弧内で、複数候補を一意に決める唯一の手がかり。
       if (entry.townMap[town] === undefined) entry.townMap[town] = zip;
       (entry.townCands[town] = entry.townCands[town] || []).push({
-        zip, koaza: POSTAL_MASTER[zip].koaza || '',
+        zip, koaza: normalizePlace(POSTAL_MASTER[zip].koaza || ''),
       });
     } else {
       entry.defaultZip = zip;
@@ -943,9 +973,11 @@ function townMatchVariants(afterCity) {
   return out;
 }
 
-function estimateZip(address) {
-  if (!address || !REVERSE_INDEX) return { zip: '', level: '不明', matchedLen: 0 };
+function estimateZip(rawAddress) {
+  if (!rawAddress || !REVERSE_INDEX) return { zip: '', level: '不明', matchedLen: 0 };
   const { byPref, prefKeysDesc } = REVERSE_INDEX;
+  // 異体字を寄せてから照合する。1文字→1文字の置換なので matchedLen（原文中の位置）はずれない
+  const address = normalizePlace(rawAddress);
 
   // searchFrom: 都道府県より後ろの部分文字列
   // baseOffset: 原文における searchFrom 開始位置（suffix 切り出し用）
