@@ -839,9 +839,16 @@ function buildReverseIndex() {
   for (const zip in POSTAL_MASTER) {
     const { pref, city, town } = POSTAL_MASTER[zip];
     if (!byPref[pref]) byPref[pref] = { cities: {} };
-    if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, defaultZip: zip };
-    if (town) byPref[pref].cities[city].townMap[town] = zip;
-    else byPref[pref].cities[city].defaultZip = zip;
+    if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, ambiguous: {}, defaultZip: zip };
+    const entry = byPref[pref].cities[city];
+    if (town) {
+      // 同じ町域名に複数の郵便番号がある（番地・小字で分かれる）場合は一意に決められない。
+      // 黙って片方を採用すると誤りに気づけないため、候補数を記録して未確定として扱う。
+      if (entry.townMap[town] === undefined) entry.townMap[town] = zip;
+      else if (entry.townMap[town] !== zip) entry.ambiguous[town] = (entry.ambiguous[town] || 1) + 1;
+    } else {
+      entry.defaultZip = zip;
+    }
   }
   for (const pref in byPref) {
     const entry = byPref[pref];
@@ -947,6 +954,7 @@ function estimateZip(address) {
               return {
                 zip: cityEntry.townMap[town],
                 level: '町域',
+                ambiguousCount: cityEntry.ambiguous[town] || 0,
                 matchedLen: baseOffset + city.length + v.delta + town.length,
               };
             }
@@ -1312,6 +1320,11 @@ async function run() {
       if (!address) {
         extras.push('', '不明', '住所が空欄');
         pendings.push('住所が空欄');
+      } else if (est && est.level === '町域' && est.ambiguousCount) {
+        // 町域名までは一致したが、番地・小字で郵便番号が分かれるため一意に決まらない
+        const r = `番地・小字で郵便番号が分かれる町域（候補${est.ambiguousCount}件）`;
+        extras.push('', '町域（複数候補）', r);
+        pendings.push(r);
       } else if (est && est.level === '町域') {
         cZipFilled++;
         extras.push(formatZip(est.zip), '町域', '');
