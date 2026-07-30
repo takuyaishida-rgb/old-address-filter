@@ -100,6 +100,7 @@
     color: var(--ink);
   }
   .picked.show { display: flex; }
+  .sub-fields { border-top: 1px solid var(--ink-09); margin-top: 20px; padding-top: 18px; }
   .picked svg { color: var(--ok); flex: none; }
   .picked .meta { color: var(--ink-48); }
 
@@ -280,6 +281,16 @@
       </svg>
       <span id="pickedName"></span><span class="meta" id="pickedMeta"></span>
     </div>
+    <div class="sub-fields" id="sheetFields" style="display:none">
+      <div class="field" id="sheetField">
+        <label>シート</label>
+        <select id="sheetSelect"></select>
+      </div>
+      <div class="field">
+        <label>ヘッダー行 <span class="sub">列名が入っている行</span></label>
+        <select id="headerSelect"></select>
+      </div>
+    </div>
   </div>
 
   <div class="card" id="configCard" style="display:none">
@@ -312,7 +323,7 @@
       </div>
     </details>
 
-    <p class="note">ヘッダー行は自動で検出します。元の列は変更せず、右端に列を追記します。郵便番号は町域まで一致した場合のみ付与し、特定できない場合は空欄と理由を返します（市区町村の代表番号では埋めません）。マスターの読み込みは初回のみ数秒かかります。</p>
+    <p class="note">元の列は変更せず、右端に列を追記します。複数シートのブックは対象シート以外もそのまま出力しますが、書式は保持されず値のみになります。郵便番号は町域まで一致した場合のみ付与し、特定できない場合は空欄と理由を返します（市区町村の代表番号では埋めません）。マスターの読み込みは初回のみ数秒かかります。</p>
 
     <div style="height:20px"></div>
     <button class="btn" id="runBtn">実行</button>
@@ -870,6 +881,54 @@ function buildCurrentAddress(originalAddress, zipcode, matchedLen) {
   return suffix ? `${head}${suffix}` : head;
 }
 
+// 算用数字 → 漢数字（町域名の「N条」照合用。1〜99に対応。札幌の北40条西などがあるため）
+function toKanjiNum(n) {
+  const d = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+  const num = parseInt(n, 10);
+  if (!num || num > 99) return null;
+  if (num < 10) return d[num];
+  const tens = Math.floor(num / 10), ones = num % 10;
+  return (tens > 1 ? d[tens] : '') + '十' + d[ones];
+}
+
+// 市区町村より後ろの文字列を、日本郵便の町域名に寄せた照合候補へ展開する
+//   - 全角数字 → 半角
+//   - 先頭の空白、誤入力の「町」（例:「倶知安町 町北四条西」）を除去
+//   - 先頭の「字」「大字」を読み飛ばす（町域名には含まれない）
+//   - 「N条」の算用数字を漢数字へ（例:「ニセコひらふ1条」→「ニセコひらふ一条」）
+//   - ヶ → ケ
+// delta = 原文から取り除いた文字数（matchedLen 補正用の近似値）
+function townMatchVariants(afterCity) {
+  const out = [];
+  const seen = new Set();
+  const add = (s, delta) => { if (s && !seen.has(s)) { seen.add(s); out.push({ s, delta }); } };
+  const expand = (s, delta) => {
+    add(s, delta);
+    // 最初に現れる「N条」だけを漢数字化する（前置の地名部分の長さは問わない）
+    //   例:「ニセコひらふ1条3丁目」→「ニセコひらふ一条3丁目」、「南2条東1丁目」→「南二条東1丁目」
+    const conv = s.replace(/(\d{1,2})条/, (all, num) => {
+      const k = toKanjiNum(num);
+      return k ? k + '条' : all;
+    });
+    if (conv !== s) add(conv, delta + (s.length - conv.length));
+    const ke = s.replace(/ヶ/g, 'ケ');
+    if (ke !== s) add(ke, delta);
+  };
+
+  const han = afterCity.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  for (const base of new Set([afterCity, han])) {
+    // 先頭のゴミ（空白・重複した「町」）を落とした版も候補に入れる
+    const trimmed = base.replace(/^[\s　]+/, '').replace(/^町(?=[南北東西])/, '');
+    for (const b of new Set([base, trimmed])) {
+      const delta0 = base.length - b.length;
+      expand(b, delta0);
+      const aza = b.match(/^(大字|字)/);
+      if (aza) expand(b.slice(aza[0].length), delta0 + aza[0].length);
+    }
+  }
+  return out;
+}
+
 function estimateZip(address) {
   if (!address || !REVERSE_INDEX) return { zip: '', level: '不明', matchedLen: 0 };
   const { byPref, prefKeysDesc } = REVERSE_INDEX;
@@ -881,18 +940,14 @@ function estimateZip(address) {
       if (searchFrom.startsWith(city)) {
         const cityEntry = prefEntry.cities[city];
         const afterCity = searchFrom.slice(city.length);
-        // 「字」「大字」は日本郵便の町域名に含まれないため、あれば読み飛ばして照合する
-        //   例:「虻田郡倶知安町字樺山116番地9」→ 町域「樺山」
-        const skipM = afterCity.match(/^(大字|字)/);
-        const variants = skipM ? [{ s: afterCity, skip: 0 }, { s: afterCity.slice(skipM[0].length), skip: skipM[0].length }]
-                               : [{ s: afterCity, skip: 0 }];
-        for (const v of variants) {
+        // 表記のゆれ（全角数字・字/大字・条の漢数字・ヶ/ケ）を吸収して町域を照合する
+        for (const v of townMatchVariants(afterCity)) {
           for (const town of cityEntry.townKeysDesc) {
             if (v.s.startsWith(town)) {
               return {
                 zip: cityEntry.townMap[town],
                 level: '町域',
-                matchedLen: baseOffset + city.length + v.skip + town.length,
+                matchedLen: baseOffset + city.length + v.delta + town.length,
               };
             }
           }
@@ -1004,7 +1059,13 @@ function judgeOldAddress(fullAddress, zipcode) {
 // ============================================================
 // UI
 // ============================================================
-let sheetData = null;
+let workbook = null;     // 読み込んだブック全体（出力時に他シートを保持するため）
+let sheetName = '';      // 処理対象シート
+let allRows = [];        // 対象シートの全行（ヘッダー行より上も含む）
+let headerRow = 0;       // ヘッダー行のインデックス（0始まり・シート先頭基準）
+let sheetStartRow = 0;   // シートの使用範囲が始まるExcel行（0始まり）
+let headers = [];        // 列名
+let dataRows = [];       // ヘッダー行より下のデータ行
 let fileName = '';
 let mode = 'both';   // 'zip' | 'legacy' | 'both'
 
@@ -1056,38 +1117,96 @@ function loadFile(file) {
   fileName = file.name;
   const reader = new FileReader();
   reader.onload = e => {
-    const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
 
-    const sel = $('colSelect');
-    const zsel = $('zipColSelect');
-    sel.innerHTML = '';
-    zsel.innerHTML = '<option value="-1">使わない</option>';
-    const headers = sheetData.length ? sheetData[0] : [];
-    headers.forEach((h, i) => {
-      const label = `${colLetter(i)}列: ${h || '（空）'}`;
+    // シート選択（複数シートのときだけ出す）
+    const ssel = $('sheetSelect');
+    ssel.innerHTML = '';
+    workbook.SheetNames.forEach((n, i) => {
+      const rows = XLSX.utils.decode_range(workbook.Sheets[n]['!ref'] || 'A1:A1').e.r + 1;
       const o = document.createElement('option');
-      o.value = i; o.textContent = label;
-      if (String(h).includes('住所')) o.selected = true;
-      sel.appendChild(o);
-      const z = document.createElement('option');
-      z.value = i; z.textContent = label;
-      if (/郵便|zip|〒/i.test(String(h))) z.selected = true;
-      zsel.appendChild(z);
+      o.value = n;
+      o.textContent = `${n}（${rows.toLocaleString()}行）`;
+      if (i === 0) o.selected = true;
+      ssel.appendChild(o);
     });
+    $('sheetFields').style.display = workbook.SheetNames.length > 1 ? 'block' : 'none';
+    $('sheetField').style.display = workbook.SheetNames.length > 1 ? 'block' : 'none';
 
     $('pickedName').textContent = fileName;
-    $('pickedMeta').textContent = `／ ${Math.max(0, sheetData.length - 1).toLocaleString()}行 ${headers.length}列`;
     $('picked').classList.add('show');
     $('configCard').style.display = 'block';
     $('resultCard').style.display = 'none';
     $('runStatus').textContent = '';
     $('runStatus').classList.remove('err');
+
+    selectSheet(workbook.SheetNames[0]);
     applyMode();
   };
   reader.readAsArrayBuffer(file);
 }
+
+// ヘッダー行の推定：先頭20行のうち、値が2つ以上入っている最初の行
+function guessHeaderRow(rows) {
+  const limit = Math.min(rows.length, 20);
+  for (let i = 0; i < limit; i++) {
+    const filled = rows[i].filter(c => String(c).trim() !== '').length;
+    if (filled >= 2) return i;
+  }
+  return 0;
+}
+
+function selectSheet(name) {
+  sheetName = name;
+  allRows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '' });
+  sheetStartRow = XLSX.utils.decode_range(workbook.Sheets[name]['!ref'] || 'A1').s.r;
+  headerRow = guessHeaderRow(allRows);
+
+  // ヘッダー行セレクタ（先頭20行を候補に出す）
+  const hsel = $('headerSelect');
+  hsel.innerHTML = '';
+  const limit = Math.min(allRows.length, 20);
+  for (let i = 0; i < limit; i++) {
+    const preview = allRows[i].filter(c => String(c).trim() !== '').slice(0, 4).join(' / ');
+    const o = document.createElement('option');
+    o.value = i;
+    o.textContent = `${sheetStartRow + i + 1}行目${preview ? '： ' + preview.slice(0, 48) : '（空行）'}`;
+    if (i === headerRow) o.selected = true;
+    hsel.appendChild(o);
+  }
+  $('sheetFields').style.display = 'block';
+  applyHeaderRow();
+}
+
+function applyHeaderRow() {
+  headers = allRows[headerRow] ? allRows[headerRow].slice() : [];
+  dataRows = allRows.slice(headerRow + 1);
+
+  const sel = $('colSelect');
+  const zsel = $('zipColSelect');
+  sel.innerHTML = '';
+  zsel.innerHTML = '<option value="-1">使わない</option>';
+  headers.forEach((h, i) => {
+    const label = `${colLetter(i)}列: ${h || '（空）'}`;
+    const o = document.createElement('option');
+    o.value = i; o.textContent = label;
+    if (String(h).includes('住所')) o.selected = true;
+    sel.appendChild(o);
+    const z = document.createElement('option');
+    z.value = i; z.textContent = label;
+    if (/郵便|zip|〒/i.test(String(h))) z.selected = true;
+    zsel.appendChild(z);
+  });
+
+  const meta = workbook.SheetNames.length > 1
+    ? `／ ${sheetName}: ${dataRows.length.toLocaleString()}行 ${headers.length}列`
+    : `／ ${dataRows.length.toLocaleString()}行 ${headers.length}列`;
+  $('pickedMeta').textContent = meta;
+  $('resultCard').style.display = 'none';
+}
+
+$('sheetSelect').addEventListener('change', e => selectSheet(e.target.value));
+$('headerSelect').addEventListener('change', e => { headerRow = parseInt(e.target.value); applyHeaderRow(); });
 
 // 既存の郵便番号列とマスターの突合（旧住所判定とは独立に評価する）
 function checkZipMatch(address, rawZip) {
@@ -1102,7 +1221,7 @@ function checkZipMatch(address, rawZip) {
 }
 
 async function run() {
-  if (!sheetData || sheetData.length < 2) return;
+  if (!workbook || !dataRows.length) return;
 
   const colIdx = parseInt($('colSelect').value);
   const zipColIdx = parseInt($('zipColSelect').value);
@@ -1141,7 +1260,7 @@ async function run() {
     await new Promise(r => setTimeout(r, 0));
   }
 
-  const rows = sheetData.slice(1);
+  const rows = dataRows;
 
   // 追記する列
   const extraHeaders = [];
@@ -1152,7 +1271,9 @@ async function run() {
   if (geocode) extraHeaders.push('緯度', '経度', '地理レベル', 'マップURL');
   if (dedup) extraHeaders.push('正規化住所', '重複ステータス', '重複グループID');
 
-  const resultData = [sheetData[0].concat(extraHeaders)];
+  // ヘッダー行より上の行（タイトル行など）はそのまま残す
+  const resultData = allRows.slice(0, headerRow).map(r => r.slice());
+  resultData.push(headers.concat(extraHeaders));
   const dedupKeys = [];
   const listRows = [];
   let cFlag = 0, cWarn = 0, cZipFilled = 0, cConverted = 0, cGeocoded = 0;
@@ -1285,7 +1406,7 @@ async function run() {
     else if (isWarn) cWarn++;
     if (isFlag || isWarn) {
       listRows.push({
-        rowNum: i + 2,
+        rowNum: sheetStartRow + headerRow + 2 + i,
         address,
         state: isFlag ? 'flag' : 'warn',
         label: isFlag ? '要対応' : '未確定',
@@ -1351,11 +1472,15 @@ async function run() {
     }
   }
 
+  // 出力: 元ブックの全シートを保持し、対象シートだけ列を追記した内容に差し替える
+  //       （書式は保持されず値のみになる）
   $('dlBtn').onclick = () => {
-    const ws = XLSX.utils.aoa_to_sheet(resultData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-    XLSX.writeFile(wb, fileName.replace(/\.[^.]+$/, '') + '_処理済.xlsx');
+    const out = XLSX.utils.book_new();
+    for (const n of workbook.SheetNames) {
+      const ws = (n === sheetName) ? XLSX.utils.aoa_to_sheet(resultData) : workbook.Sheets[n];
+      XLSX.utils.book_append_sheet(out, ws, n);
+    }
+    XLSX.writeFile(out, fileName.replace(/\.[^.]+$/, '') + '_処理済.xlsx');
   };
 
   $('resultCard').style.display = 'block';
