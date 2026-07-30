@@ -1,0 +1,7 @@
+# 日本郵便の生ZIP（scripts/build_postal_master.py で都度DL）
+data/raw/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

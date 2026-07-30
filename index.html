@@ -3,114 +3,340 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>旧住所フィルター</title>
+<title>郵便番号・旧住所フィルター</title>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="data/cities.js"></script>
 <style>
+  /* ============================================================
+     Design system: docs/DESIGN_SYSTEM.md
+     - Sans only, single blue accent, 3 state colors
+     - Flat: 1px hairlines, no shadows
+     - No emoji / no decorative glyphs (icons are inline SVG)
+     ============================================================ */
+  :root {
+    --ink:          #37352F;
+    --ink-64:       rgba(55,53,47,0.64);
+    --ink-48:       rgba(55,53,47,0.48);
+    --ink-16:       rgba(55,53,47,0.16);
+    --ink-09:       rgba(55,53,47,0.09);
+    --ink-04:       rgba(55,53,47,0.04);
+    --canvas:       #FFFFFF;
+    --canvas-soft:  #F7F7F5;
+    --accent:       #2383E2;
+    --accent-ink:   #0B6BBF;
+    --accent-soft:  #E7F3F8;
+    --flag:         #E03E3E;
+    --flag-soft:    #FDEBEC;
+    --warn:         #CB912F;
+    --warn-soft:    #FAF3E8;
+    --ok:           #448361;
+    --ok-soft:      #EDF3EC;
+    --radius:       4px;
+    --radius-card:  8px;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; background: #f5f5f5; color: #333; }
-  .container { max-width: 720px; margin: 40px auto; padding: 0 20px; }
-  h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
-  .subtitle { font-size: 14px; color: #666; margin-bottom: 32px; }
-
-  .card { background: #fff; border-radius: 10px; padding: 28px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-  .card h2 { font-size: 15px; font-weight: 700; margin-bottom: 16px; color: #444; }
-
-  .drop-zone {
-    border: 2px dashed #ccc; border-radius: 8px; padding: 40px 20px;
-    text-align: center; cursor: pointer; transition: .15s;
+  html, body { background: var(--canvas-soft); }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+    color: var(--ink);
+    line-height: 1.55;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
   }
-  .drop-zone:hover, .drop-zone.dragover { border-color: #2563eb; background: #eff6ff; }
-  .drop-zone .icon { font-size: 36px; margin-bottom: 10px; }
-  .drop-zone p { font-size: 14px; color: #666; }
-  .drop-zone input { display: none; }
 
-  .field { margin-bottom: 16px; }
-  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  select { width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; background: #fff; }
+  .container { max-width: 760px; margin: 72px auto 96px; padding: 0 24px; }
 
-  .btn {
-    display: inline-block; padding: 11px 28px; background: #2563eb; color: #fff;
-    border: none; border-radius: 7px; font-size: 15px; font-weight: 600;
-    cursor: pointer; transition: .15s; width: 100%;
+  h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; margin-bottom: 12px; }
+  .lead { font-size: 15px; color: var(--ink-64); max-width: 620px; }
+  .lead + .lead { margin-top: 6px; }
+  header { margin-bottom: 48px; }
+
+  .card {
+    background: var(--canvas);
+    border: 1px solid var(--ink-09);
+    border-radius: var(--radius-card);
+    padding: 28px 32px;
+    margin-bottom: 20px;
   }
-  .btn:hover { background: #1d4ed8; }
-  .btn:disabled { background: #93c5fd; cursor: not-allowed; }
-
-  .result { display: none; }
-  .stats { display: flex; gap: 12px; margin-bottom: 20px; }
-  .stat { flex: 1; background: #f8fafc; border-radius: 8px; padding: 16px; text-align: center; }
-  .stat .num { font-size: 28px; font-weight: 700; }
-  .stat .num.red { color: #dc2626; }
-  .stat .num.green { color: #16a34a; }
-  .stat .label { font-size: 12px; color: #666; margin-top: 2px; }
-
-  .dl-btn {
-    display: inline-block; padding: 11px 28px; background: #16a34a; color: #fff;
-    border: none; border-radius: 7px; font-size: 15px; font-weight: 600;
-    cursor: pointer; transition: .15s; width: 100%; text-align: center;
+  .card > h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
   }
-  .dl-btn:hover { background: #15803d; }
+  .card > h2 .num {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--ink-48);
+  }
+
+  /* --- drop zone --- */
+  .drop {
+    border: 1px dashed var(--ink-16);
+    border-radius: var(--radius-card);
+    background: var(--canvas-soft);
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop svg { color: var(--ink-48); margin-bottom: 10px; }
+  .drop .t1 { font-size: 14px; color: var(--ink-64); }
+  .drop .t2 { font-size: 12px; color: var(--ink-48); margin-top: 4px; }
+  .drop input { display: none; }
+
+  .picked {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .picked.show { display: flex; }
+  .picked svg { color: var(--ok); flex: none; }
+  .picked .meta { color: var(--ink-48); }
+
+  /* --- segmented mode selector --- */
+  .seg { display: flex; gap: 8px; margin-bottom: 22px; }
+  .seg button {
+    flex: 1;
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-64);
+    background: var(--canvas);
+    border: 1px solid var(--ink-16);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
+  }
+  .seg button:hover { background: var(--ink-04); }
+  .seg button[aria-pressed="true"] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  /* --- fields --- */
+  .field { margin-bottom: 18px; }
+  .field:last-child { margin-bottom: 0; }
+  .field > label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+  .field > label .sub { color: var(--ink-48); font-weight: 400; }
+
+  select, input[type="text"] {
+    width: 100%;
+    padding: 9px 12px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--canvas);
+    border: 1px solid var(--ink-16);
+    border-radius: var(--radius);
+    transition: border-color .12s, box-shadow .12s;
+  }
+  select:focus, input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(35,131,226,0.15);
+  }
+
+  .check { display: block; font-size: 13px; margin-bottom: 10px; cursor: pointer; }
+  .check:last-child { margin-bottom: 0; }
+  .check .sub { color: var(--ink-48); }
+  input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 16px; height: 16px;
+    border: 1px solid var(--ink-16);
+    border-radius: 3px;
+    background: var(--canvas);
+    cursor: pointer;
+    position: relative;
+    vertical-align: -3px;
+    margin-right: 8px;
+  }
+  input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+  input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 4px; top: 1px;
+    width: 5px; height: 9px;
+    border: solid #fff; border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  details.opts { border-top: 1px solid var(--ink-09); margin-top: 22px; padding-top: 18px; }
+  details.opts > summary {
+    font-size: 13px; font-weight: 500; color: var(--ink-64);
+    cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px;
+  }
+  details.opts > summary::-webkit-details-marker { display: none; }
+  details.opts > summary svg { transition: transform .12s; }
+  details.opts[open] > summary svg { transform: rotate(90deg); }
+  details.opts .body { margin-top: 16px; }
+
+  .note { font-size: 12px; color: var(--ink-48); line-height: 1.6; margin-top: 16px; }
+
+  /* --- buttons --- */
+  .btn, .btn-sub {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%;
+    padding: 10px 20px;
+    font-family: inherit; font-size: 14px; font-weight: 500;
+    border-radius: var(--radius);
+    border: none; cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+  .btn { background: var(--accent); color: #fff; }
+  .btn:hover { background: var(--accent-ink); }
+  .btn:disabled { background: var(--ink-16); color: var(--ink-48); cursor: not-allowed; }
+  .btn-sub { background: var(--canvas); color: var(--ink); border: 1px solid var(--ink-16); }
+  .btn-sub:hover { background: var(--ink-04); }
+
+  .status { font-size: 12px; color: var(--ink-64); margin-top: 12px; line-height: 1.6; }
+  .status.err { color: var(--flag); }
+
+  /* --- result --- */
+  #resultCard { display: none; }
+  .stats { display: flex; gap: 12px; margin-bottom: 24px; }
+  .stat {
+    flex: 1;
+    background: var(--canvas-soft);
+    border: 1px solid var(--ink-09);
+    border-radius: var(--radius-card);
+    padding: 16px;
+    text-align: center;
+  }
+  .stat .n {
+    font-size: 30px; font-weight: 600; line-height: 1;
+    letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+  }
+  .stat .n.flag { color: var(--flag); }
+  .stat .n.warn { color: var(--warn); }
+  .stat .n.ok   { color: var(--ok); }
+  .stat .l { font-size: 12px; color: var(--ink-64); margin-top: 8px; }
+
+  .list-head { font-size: 13px; font-weight: 600; margin: 28px 0 4px; }
+  .list-note { font-size: 12px; color: var(--ink-48); margin-bottom: 8px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { background: #f1f5f9; padding: 8px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; font-weight: 600; }
-  td { padding: 7px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  th {
+    text-align: left; padding: 8px 10px;
+    font-size: 12px; font-weight: 500; letter-spacing: 0.04em;
+    color: var(--ink-64);
+    border-bottom: 1px solid var(--ink-16);
+  }
+  td { padding: 10px; border-bottom: 1px solid var(--ink-09); vertical-align: top; }
   tr:last-child td { border-bottom: none; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-  .badge.old { background: #fee2e2; color: #dc2626; }
-  .reason { color: #888; font-size: 11px; }
+  td.num { color: var(--ink-48); font-variant-numeric: tabular-nums; width: 48px; }
+  td.reason { color: var(--ink-64); font-size: 12px; line-height: 1.5; }
+  .empty { text-align: center; color: var(--ink-48); padding: 24px 0; font-size: 13px; }
 
-  .note { font-size: 12px; color: #888; margin-top: 8px; }
-  #filename { font-size: 13px; color: #2563eb; margin-top: 8px; font-weight: 600; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 500; white-space: nowrap;
+  }
+  .badge.flag { background: var(--flag-soft); color: var(--flag); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.ok   { background: var(--ok-soft);   color: var(--ok); }
+
+  ::selection { background: rgba(35,131,226,0.28); }
+
+  @media (max-width: 640px) {
+    .container { margin: 40px auto 64px; }
+    .card { padding: 22px 20px; }
+    .seg { flex-direction: column; }
+    .stats { flex-wrap: wrap; }
+    .stat { min-width: calc(50% - 6px); }
+  }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>旧住所フィルター</h1>
-  <p class="subtitle">Excelファイルの住所列をチェックし、旧住所の可能性がある行をフラグします。<br>ファイルはブラウザ内のみで処理され、サーバーには送信されません。</p>
+  <header>
+    <h1>郵便番号・旧住所フィルター</h1>
+    <p class="lead">Excel・CSVの住所列から郵便番号を付与し、旧住所や表記の異常をフラグします。日本郵便の全国マスター約12万件と突合します。</p>
+    <p class="lead">ファイルはブラウザ内だけで処理され、サーバーには送信されません。</p>
+  </header>
 
   <div class="card">
-    <h2>① ファイルを選択</h2>
-    <div class="drop-zone" id="dropZone">
-      <div class="icon">📂</div>
-      <p>クリックまたはドラッグ&ドロップ</p>
-      <p>.xlsx / .xls / .csv に対応</p>
+    <h2><span class="num">01</span>ファイル</h2>
+    <div class="drop" id="dropZone">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+      </svg>
+      <div class="t1">クリック、またはファイルをドロップ</div>
+      <div class="t2">.xlsx / .xls / .csv</div>
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
     </div>
-    <div id="filename"></div>
+    <div class="picked" id="picked">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6L9 17l-5-5"/>
+      </svg>
+      <span id="pickedName"></span><span class="meta" id="pickedMeta"></span>
+    </div>
   </div>
 
   <div class="card" id="configCard" style="display:none">
-    <h2>② 住所列を選択</h2>
+    <h2><span class="num">02</span>処理内容</h2>
+
+    <div class="seg" id="modeSeg">
+      <button type="button" data-mode="zip"    aria-pressed="false">郵便番号を付ける</button>
+      <button type="button" data-mode="legacy" aria-pressed="false">旧住所を判定する</button>
+      <button type="button" data-mode="both"   aria-pressed="true">両方</button>
+    </div>
+
     <div class="field">
-      <label>住所が入っている列</label>
+      <label>住所列 <span class="sub">必須</span></label>
       <select id="colSelect"></select>
     </div>
-    <p class="note">※ ヘッダー行がある場合は自動で検出します</p>
-    <br>
-    <button class="btn" id="runBtn" onclick="run()">判定を実行</button>
+    <div class="field" id="zipColField">
+      <label>郵便番号列 <span class="sub">任意 / 指定するとマスターと突合します</span></label>
+      <select id="zipColSelect"><option value="-1">使わない</option></select>
+    </div>
+
+    <details class="opts">
+      <summary>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+        詳細オプション
+      </summary>
+      <div class="body">
+        <label class="check" id="optConvert"><input type="checkbox" id="convertCheck">現行住所（推定）を別列に追記する</label>
+        <label class="check"><input type="checkbox" id="geocodeCheck">緯度経度・地図URLを追記する <span class="sub">地理データ約12MBを追加読み込み</span></label>
+        <label class="check"><input type="checkbox" id="dedupCheck">表記ゆれを正規化して重複を検出する</label>
+      </div>
+    </details>
+
+    <p class="note">ヘッダー行は自動で検出します。元の列は変更せず、右端に列を追記します。郵便番号は町域まで一致した場合のみ付与し、特定できない場合は空欄と理由を返します（市区町村の代表番号では埋めません）。マスターの読み込みは初回のみ数秒かかります。</p>
+
+    <div style="height:20px"></div>
+    <button class="btn" id="runBtn">実行</button>
+    <div class="status" id="runStatus"></div>
   </div>
 
-  <div class="card result" id="resultCard">
-    <h2>③ 結果</h2>
+  <div class="card" id="resultCard">
+    <h2><span class="num">03</span>結果</h2>
     <div class="stats">
-      <div class="stat">
-        <div class="num" id="statTotal">-</div>
-        <div class="label">総件数</div>
-      </div>
-      <div class="stat">
-        <div class="num red" id="statOld">-</div>
-        <div class="label">旧住所の可能性あり</div>
-      </div>
-      <div class="stat">
-        <div class="num green" id="statOk">-</div>
-        <div class="label">問題なし</div>
-      </div>
+      <div class="stat"><div class="n" id="statTotal">-</div><div class="l">総件数</div></div>
+      <div class="stat"><div class="n flag" id="statFlag">-</div><div class="l">要対応</div></div>
+      <div class="stat"><div class="n warn" id="statWarn">-</div><div class="l">未確定</div></div>
+      <div class="stat"><div class="n ok" id="statOk">-</div><div class="l">問題なし</div></div>
     </div>
-    <button class="dl-btn" id="dlBtn">📥 判定済みファイルをダウンロード</button>
-    <br><br>
-    <h2>旧住所検出一覧（最大50件表示）</h2>
-    <table id="previewTable">
-      <thead><tr><th>#</th><th>住所</th><th>判定理由</th></tr></thead>
+    <button class="btn-sub" id="dlBtn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 4v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/>
+      </svg>
+      処理済みファイルをダウンロード
+    </button>
+    <div class="list-head">要対応・未確定の一覧</div>
+    <div class="list-note" id="listNote"></div>
+    <table>
+      <thead><tr><th>行</th><th>住所</th><th>判定</th><th>理由</th></tr></thead>
       <tbody id="previewBody"></tbody>
     </table>
   </div>
@@ -205,143 +431,939 @@ const OLD_TOWNS = [
 
 // 旧字体
 const OLD_KANJI = /[國縣區驛濱邊澤關藏櫻龍廳]/;
+// 旧字体→新字体 変換マップ（「武藏野市」→「武蔵野市」の照合や変換に利用）
+const OLD_KANJI_MAP = {
+  '藏':'蔵','國':'国','縣':'県','區':'区','驛':'駅',
+  '濱':'浜','邊':'辺','澤':'沢','關':'関','櫻':'桜',
+  '龍':'竜','廳':'庁',
+};
+function normalizeOldKanji(s) {
+  return s ? s.replace(/[藏國縣區驛濱邊澤關櫻龍廳]/g, c => OLD_KANJI_MAP[c] || c) : s;
+}
+
 // 漢数字番地
-const KANJI_BANCHI = /[一二三四五六七八九十百千]+(番地|番)/;
+// 「一番町」「二番町」「十番」「九番丁」等の地名が誤爆しないよう
+//   (a) 「〇番地」は常に検出
+//   (b) 「〇番」は後ろが [数字／ハイフン／の／ノ／号／文末] の時のみ検出
+const KANJI_BANCHI = /[一二三四五六七八九十百千]+番地|[一二三四五六七八九十百千]+番(?=[\d０-９\-ー－のノ号]|$)/;
+
 // カタカナ「ノ」区切り
 const KATAKANA_NO = /[0-9０-９]+ノ[0-9０-９]+/;
+
+// 外国住所キーワード（判定対象外にする）
+const FOREIGN_KEYWORDS = /(台湾|大韓民国|中華人民共和国|中華民国|アメリカ合衆国|米国|イギリス|英国|カナダ|ドイツ|フランス|タイ国|中華|大韓|シンガポール|オーストラリア)/;
+
+// 東京35区時代（1932-1947）の消滅区名 → 現行23区へのマッピング
+const EXTINCT_TOKYO_WARD_MAP = {
+  '麹町区':'千代田区','神田区':'千代田区',
+  '日本橋区':'中央区','京橋区':'中央区',
+  '芝区':'港区','麻布区':'港区','赤坂区':'港区',
+  '四谷区':'新宿区','牛込区':'新宿区','淀橋区':'新宿区',
+  '小石川区':'文京区','本郷区':'文京区',
+  '下谷区':'台東区','浅草区':'台東区',
+  '本所区':'墨田区','向島区':'墨田区',
+  '深川区':'江東区','城東区':'江東区',
+  '荏原区':'品川区',
+  '大森区':'大田区','蒲田区':'大田区',
+  '滝野川区':'北区','王子区':'北区',
+};
+
+// 入力住所から消滅東京旧区を最長一致で検出し、位置情報付きで返す（無ければ null）
+function detectExtinctTokyoWard(address) {
+  if (!address) return null;
+  for (let i = 0; i < address.length; i++) {
+    if (address[i] !== '区') continue;
+    for (let len = 5; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (EXTINCT_TOKYO_WARD_MAP[cand]) {
+        return {
+          oldWard: cand,
+          newWard: EXTINCT_TOKYO_WARD_MAP[cand],
+          matchStart: start,
+          matchEnd: i + 1,
+        };
+      }
+    }
+  }
+  return null;
+}
+// ※ SHI_EXTRACT / GUN_EXTRACT regex は廃止。
+// regex で除外文字を指定する方式は、「府」「都」「ケ」「ヶ」などが正式な市郡名に
+// 含まれるケースを切ってしまうため誤爆が多い。代わりに dict-lookup 方式を使う。
+// detectCity() / detectGun() を参照。
 
 // 住所コンポーネントの境界：キーワードの直後に来る典型的な文字
 // 大字・丁目・番地・数字（半角/全角）・漢数字・空白・中点、または文末
 const ADDR_BOUNDARY = '(?=[大字丁番地号\\d０-９一二三四五六七八九十百千\\s・]|$)';
+// 前境界：行頭 or 都道府県・市区郡の直後、空白、中点など
+// 「共栄町」の内部の「栄町」をヒットさせないようにする
+// ※「字」は含めない。「字XX町」は小字レベルで OLD_TOWNS（町村レベル）とは階層が異なるため、
+//    字の直後にOLD_TOWNS名があっても誤爆させない（例:「字新田町」の新田町を群馬県の旧新田町と誤認しない）
+const ADDR_PREBOUNDARY = '(?:^|[県都道府市区郡\\s・])';
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function judgeOldAddress(address) {
-  if (!address || typeof address !== 'string' || !address.trim()) return { isOld: false, reason: '' };
-  const reasons = [];
+// 住所本体と建物名を分離するヒューリスティック
+// 前提: 住所末尾 = 「数字／漢数字 + 丁目/番地/番/号/ハイフン」の連続ブロック
+//       そのブロックの直後から先が建物名・部屋番号
+// 例:
+//   「横浜市南区二葉町三丁目２８番地１２ルクシェール横濱吉野町１００１」
+//     → 住所「横浜市南区二葉町三丁目２８番地１２」／建物「ルクシェール横濱吉野町１００１」
+//   「神奈川県鎌倉市由比ガ浜1-2-3」（建物名なし）
+//     → 住所全体／建物「」
+// 住所の数字起点の見極め方：
+//   (a) 半角/全角数字から始まる … 例「２８番地」「1-2-3」
+//   (b) 漢数字 + 丁目/番地/番/号  … 例「三丁目」「四番地」
+//       ※「二葉町」の「二」のように丁目/番地が続かない漢数字は誤爆しない
+function splitAddressAndBuilding(text) {
+  if (!text) return { address: '', building: '' };
+  // 住所末尾ブロックの開始トリガー:
+  //   (a) 半角/全角数字1文字以上  … 「1-2-3」「２８番地」など
+  //   (b) 漢数字 + 「丁目」または「番地」 … 「三丁目」「四番地」など
+  //       ※「番」「号」単体は place name 誤爆（二番町・二番丁・一番町）のため不採用
+  // マッチ後、[数字・漢数字・丁目・番地・番・号・ハイフン・「の／ノ」] を貪欲に吸収。
+  // 空白は run から除外：「1-2-3 101号室」のような部屋番号を address 側に引き込まないため、
+  // 空白があった時点で address パートは終了とみなす。
+  const TAIL_CHARS = '[\\d０-９一二三四五六七八九十百千\\-ー－のノ]|丁目|番地|番|号';
+  const startRe = new RegExp(
+    '(?:[\\d０-９]|[一二三四五六七八九十百千]+(?:丁目|番地))' +
+    '(?:' + TAIL_CHARS + ')*'
+  );
+  const m = startRe.exec(text);
+  if (!m) return { address: text, building: '' };
+  const end = m.index + m[0].length;
+  return { address: text.slice(0, end), building: text.slice(end) };
+}
 
-  // 消滅郡名：部分一致（完全消滅した郡名なので誤検知リスク低）
-  for (const d of EXTINCT_DISTRICTS) {
-    if (address.includes(d)) reasons.push(`消滅郡名「${d}」`);
+// 日本郵便マスターから生成された現行の郡・市セット（cities.js で window に設定）
+const CURRENT_GUNS = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.currentGuns) || []);
+const CURRENT_CITIES = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.currentCities) || []);
+// 旧市・旧郡セット（extinct_municipalities.json 由来、build script で生成）
+const EXTINCT_CITIES_DICT = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.extinctCities) || []);
+const EXTINCT_GUNS_DICT = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.extinctGuns) || []);
+// OLD_TOWNS と現行市が現在同名町域を持つ組合せ（"焼津市|栄町" 形式）
+const OLD_TOWN_CONFLICTS = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.oldTownConflicts) || []);
+const HAS_POSTAL_MASTER = CURRENT_GUNS.size > 0;
+
+// ヶ/ケ・旧字体の正規化を通して照合（「茅ヶ崎市」↔「茅ケ崎市」、「武藏野市」↔「武蔵野市」等）
+function nameVariants(name) {
+  const v = new Set([name]);
+  v.add(name.replace(/ヶ/g, 'ケ'));
+  v.add(name.replace(/ケ/g, 'ヶ'));
+  const nk = normalizeOldKanji(name);
+  v.add(nk);
+  v.add(nk.replace(/ヶ/g, 'ケ'));
+  v.add(nk.replace(/ケ/g, 'ヶ'));
+  return [...v];
+}
+function citySetHas(name)    { return nameVariants(name).some(v => CURRENT_CITIES.has(v)); }
+function extinctCityHas(name){ return nameVariants(name).some(v => EXTINCT_CITIES_DICT.has(v)); }
+function gunSetHas(name)     { return nameVariants(name).some(v => CURRENT_GUNS.has(v)); }
+function extinctGunHas(name) {
+  return nameVariants(name).some(v => EXTINCT_GUNS_DICT.has(v) || EXTINCT_DISTRICTS.includes(v));
+}
+
+// 住所から最初の市を検出して { status: 'current'|'extinct', city: '...' } を返す（無ければ null）
+// 3段階：
+//   Phase 1: 現行市マスターとの最長一致（さいたま市／府中市／宇都宮市／茅ヶ崎市 など全部OK）
+//   Phase 2: extinct_municipalities 由来の旧市 dict に掲載（大宮市／浦和市 など）
+//   Phase 3: マスター外だが漢字・ひらがなのみで構成され「〇〇市」として妥当 → 不明扱いで flag
+//            （ニューヨーク市・ク市・崎市のような誤爆を Phase 3 の漢字／ひらがな check で排除）
+function isCityNamePrefix(prefix) {
+  // prefix = 市の直前までの文字列
+  if (!/^[一-龥ぁ-ゖ]+$/.test(prefix)) return false;       // 漢字・ひらがなのみ（カタカナ/数字/記号NG）
+  if (/[都道府県市区町村郡字]/.test(prefix)) return false; // 行政接尾辞/字が含まれるのはNG
+  return true;
+}
+
+function detectCity(address) {
+  // Phase 1: 現行市マスターにある最長一致（住所全体を走査）
+  //   「横浜市港北区」「さいたま市大宮区」のような政令市＋区も含めて最長一致したい
+  //   末尾が 市 or 区 の位置を対象に、長さ 2〜8 で試行
+  let best = null;
+  for (let i = 0; i < address.length; i++) {
+    const ch = address[i];
+    if (ch !== '市' && ch !== '区') continue;
+    for (let len = 8; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (citySetHas(cand)) {
+        if (!best || cand.length > best.city.length) {
+          best = { status: 'current', city: cand };
+        }
+        break; // このポジションで最長が取れたので次のポジションへ
+      }
+    }
+  }
+  if (best) return best;
+  // Phase 2: 旧市 dict 掲載
+  for (let i = 0; i < address.length; i++) {
+    if (address[i] !== '市') continue;
+    for (let len = 5; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (extinctCityHas(cand)) return { status: 'extinct', city: cand };
+    }
+  }
+  // Phase 3: マスター・dict 外だが構造的に日本の市名として妥当 → extinct-unknown
+  for (let i = 0; i < address.length; i++) {
+    if (address[i] !== '市') continue;
+    // 市の直後が町/丁/目/村/区/場 なら地名の一部に埋め込まれた 市 と判断してスキップ
+    //   例: 「古市町」→ 市の次が町 →「古市」を市として拾わない
+    //       「十日市場」→ 市の次が場 →「十日市」を市として拾わない
+    const nextCh = address[i + 1] || '';
+    if ('町丁目村区場'.includes(nextCh)) continue;
+    for (let len = 5; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (!isCityNamePrefix(cand.slice(0, -1))) continue;
+      if (!citySetHas(cand)) return { status: 'extinct', city: cand, note: 'マスター外' };
+    }
+  }
+  return null;
+}
+
+function isGunNamePrefix(prefix) {
+  if (!/^[一-龥ぁ-ゖ]+$/.test(prefix)) return false;
+  if (/[都道府県市区町村]/.test(prefix)) return false;
+  return true;
+}
+
+function detectGun(address) {
+  // Phase 1: 現行郡
+  for (let i = 0; i < address.length; i++) {
+    if (address[i] !== '郡') continue;
+    for (let len = 6; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (gunSetHas(cand)) return { status: 'current', gun: cand };
+    }
+  }
+  // Phase 2: 旧郡 dict 掲載（extinct_municipalities 由来 + ハードコード）
+  for (let i = 0; i < address.length; i++) {
+    if (address[i] !== '郡') continue;
+    for (let len = 5; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (extinctGunHas(cand)) {
+        return { status: 'extinct', gun: cand };
+      }
+    }
+  }
+  // Phase 3: マスター・dict 外だが日本郡名として妥当 → extinct-unknown
+  for (let i = 0; i < address.length; i++) {
+    if (address[i] !== '郡') continue;
+    // 郡の直後が 市/町/村 でないと郡として不自然（例: 「字堤ノ内逢隈上郡」の 郡 は地名の一部）
+    const nextCh = address[i + 1] || '';
+    if (!'市町村'.includes(nextCh)) continue;
+    for (let len = 5; len >= 2; len--) {
+      const start = i + 1 - len;
+      if (start < 0) continue;
+      const cand = address.slice(start, i + 1);
+      if (!isGunNamePrefix(cand.slice(0, -1))) continue;
+      if (!gunSetHas(cand)) return { status: 'extinct', gun: cand, note: 'マスター外' };
+    }
+  }
+  return null;
+}
+
+// 郵便番号マスター（Bモード・逆引き共通、遅延読込）
+let POSTAL_MASTER = null;
+let REVERSE_INDEX = null;  // { byPref, prefKeysDesc }
+// 旧市町村 → 新市町村＋代表郵便番号マップ（遅延読込）
+let EXTINCT_INDEX = null;  // { byPref: { [pref]: entries[] }, all: entries[] }
+// 住所→緯度経度インデックス（遅延読込、geolonia 由来）
+let GEOCODING = null;       // { city: {pref+city: [lat,lng]}, oaza: {pref+city+oaza: [lat,lng]} }
+
+// 重複検出のための正規化
+//   「東京都府中市浅間町３丁目２番地の34」「府中市浅間町3-2-34」「府中市浅間町3丁目2-34」を
+//   全て同じキー「府中市浅間町3-2-34」相当に正規化（建物名・部屋番号は保持して別比較）
+const KANJI_DIGIT_MAP = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
+function kanjiNumToDigit(s) {
+  // 番地に出てくる範囲（〜99）でカバー
+  s = s.replace(/([一二三四五六七八九])十([一二三四五六七八九])/g, (_, a, b) => KANJI_DIGIT_MAP[a] * 10 + KANJI_DIGIT_MAP[b]);
+  s = s.replace(/([一二三四五六七八九])十/g, (_, a) => KANJI_DIGIT_MAP[a] * 10);
+  s = s.replace(/十([一二三四五六七八九])/g, (_, a) => 10 + KANJI_DIGIT_MAP[a]);
+  s = s.replace(/十/g, '10');
+  s = s.replace(/[一二三四五六七八九]/g, m => KANJI_DIGIT_MAP[m]);
+  return s;
+}
+
+function normalizeAddressKey(addr) {
+  if (!addr) return '';
+  let s = addr;
+  // 旧字体→新字体（武藏野市→武蔵野市）
+  s = normalizeOldKanji(s);
+  // ヶ→ケ
+  s = s.replace(/ヶ/g, 'ケ');
+  // 全角英数→半角
+  s = s.replace(/[０-９Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  // 番地に登場する漢数字を半角化（「三丁目」→「3丁目」、「二十一番地」→「21番地」）
+  s = s.replace(/([一二三四五六七八九十]+)(丁目|番地|番|号|条|区画)/g, (_, num, suf) => kanjiNumToDigit(num) + suf);
+  // 数字に挟まれた区切り表現を統一ハイフンへ（連続区切りに対応するため反復）
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/(\d)\s*(?:丁目|番地の|番地|番|号|の|ノ)\s*(\d)/g, '$1-$2');
+  } while (s !== prev);
+  // 末尾の番地・番・号は削除
+  s = s.replace(/(\d)(?:番地|番|号)\s*$/g, '$1');
+  // 各種ハイフン類を ASCII '-' に統一
+  s = s.replace(/[ー－―‐−–—]/g, '-');
+  // 連続ハイフン圧縮、末尾ハイフン除去
+  s = s.replace(/-+/g, '-').replace(/-+$/g, '');
+  // 空白除去（半角・全角・タブ）
+  s = s.replace(/[\s　]/g, '');
+  // 都道府県は省略可だが、付いてれば残す
+  return s;
+}
+
+async function ensurePostalMaster(onProgress) {
+  if (POSTAL_MASTER) return POSTAL_MASTER;
+  if (onProgress) onProgress('郵便番号マスターを読み込み中...（初回のみ数秒）');
+  const resp = await fetch('data/postal_master.json');
+  if (!resp.ok) throw new Error('postal_master.json の読み込みに失敗しました');
+  POSTAL_MASTER = await resp.json();
+  if (onProgress) onProgress('');
+  return POSTAL_MASTER;
+}
+
+async function ensureGeocoding(onProgress) {
+  if (GEOCODING) return GEOCODING;
+  if (onProgress) onProgress('地理データ（緯度経度）を読み込み中...（初回のみ数秒）');
+  const resp = await fetch('data/geocoding.json');
+  if (!resp.ok) throw new Error('geocoding.json の読み込みに失敗しました');
+  GEOCODING = await resp.json();
+  if (onProgress) onProgress('');
+  return GEOCODING;
+}
+
+// 郵便番号 → POSTAL_MASTER → (pref, city, town) を経由して緯度経度を引く
+function geocodeFromZip(zipcode) {
+  if (!GEOCODING || !POSTAL_MASTER || !zipcode) return null;
+  const ref = POSTAL_MASTER[zipcode];
+  if (!ref) return null;
+  const cleanTown = (ref.town || '').replace(/（.*$/, '').trim();
+  // 1) oaza レベル（最も精度高）
+  if (cleanTown) {
+    const k = ref.pref + ref.city + cleanTown;
+    if (GEOCODING.oaza[k]) return { lat: GEOCODING.oaza[k][0], lng: GEOCODING.oaza[k][1], level: '町域' };
+  }
+  // 2) city レベル（重心）
+  const ck = ref.pref + ref.city;
+  if (GEOCODING.city[ck]) return { lat: GEOCODING.city[ck][0], lng: GEOCODING.city[ck][1], level: '市区町村' };
+  return null;
+}
+
+// 旧市町村マップの遅延読込
+async function ensureExtinctMap(onProgress) {
+  if (EXTINCT_INDEX) return EXTINCT_INDEX;
+  if (onProgress) onProgress('旧市町村マップを読み込み中...');
+  const resp = await fetch('data/extinct_municipalities.json');
+  if (!resp.ok) throw new Error('extinct_municipalities.json の読み込みに失敗しました');
+  const arr = await resp.json();
+  const byPref = {};
+  for (const e of arr) {
+    const k = e.prefecture || '不明';
+    (byPref[k] = byPref[k] || []).push(e);
+  }
+  // 各県ごとに oldName 長さ降順にソート（最長一致のため）
+  for (const k in byPref) {
+    byPref[k].sort((a, b) => b.oldName.length - a.oldName.length);
+  }
+  // all も同じく長さ降順：都道府県未指定の入力時に最長一致を優先するため
+  const allSorted = arr.slice().sort((a, b) => b.oldName.length - a.oldName.length);
+  // oldName 直引き（チェーン解決用）：「保谷市 → 西東京市」など
+  const byOldName = {};
+  for (const e of arr) {
+    if (e.oldName && !byOldName[e.oldName]) byOldName[e.oldName] = e;
+  }
+  EXTINCT_INDEX = { byPref, all: allSorted, byOldName };
+  if (onProgress) onProgress('');
+  return EXTINCT_INDEX;
+}
+
+// 旧市町村の検索：入力住所に oldName（任意で 郡名 が前置）の出現位置を見つけて返す
+function lookupExtinct(address) {
+  if (!EXTINCT_INDEX || !address) return null;
+  const { byPref, all } = EXTINCT_INDEX;
+
+  // 都道府県ヒントで候補を絞る
+  let candidates = null;
+  for (const p of Object.keys(byPref)) {
+    if (address.includes(p)) { candidates = byPref[p]; break; }
+  }
+  if (!candidates) candidates = all;
+
+  // 郡前置パート: 都道府県・市町村を跨がない漢字/かな1〜5文字 + 郡（任意）
+  const gunOptional = '(?:(?:(?![都道府県市町村])[一-龥ぁ-ゖァ-ヺ]){1,5}郡)?';
+
+  for (const e of candidates) {
+    const re = new RegExp(gunOptional + escapeRegex(e.oldName));
+    const m = re.exec(address);
+    if (m) {
+      return {
+        entry: e,
+        matchStart: m.index,
+        matchEnd: m.index + m[0].length,
+        matchedText: m[0],
+      };
+    }
+  }
+  return null;
+}
+
+function buildReverseIndex() {
+  if (REVERSE_INDEX) return REVERSE_INDEX;
+  const byPref = {};
+  for (const zip in POSTAL_MASTER) {
+    const { pref, city, town } = POSTAL_MASTER[zip];
+    if (!byPref[pref]) byPref[pref] = { cities: {} };
+    if (!byPref[pref].cities[city]) byPref[pref].cities[city] = { townMap: {}, defaultZip: zip };
+    if (town) byPref[pref].cities[city].townMap[town] = zip;
+    else byPref[pref].cities[city].defaultZip = zip;
+  }
+  for (const pref in byPref) {
+    const entry = byPref[pref];
+    entry.cityKeysDesc = Object.keys(entry.cities).sort((a, b) => b.length - a.length);
+    for (const c in entry.cities) {
+      entry.cities[c].townKeysDesc = Object.keys(entry.cities[c].townMap).sort((a, b) => b.length - a.length);
+    }
+  }
+  const prefKeysDesc = Object.keys(byPref).sort((a, b) => b.length - a.length);
+  REVERSE_INDEX = { byPref, prefKeysDesc };
+  return REVERSE_INDEX;
+}
+
+// 住所から番地以降をフォールバック抽出（逆引きが効かない場合用）
+// 例: 「神奈川県橘樹郡田島町1-2-3 ビル5階」→「1-2-3 ビル5階」
+function extractBanchiSuffix(address) {
+  if (!address) return '';
+  const m = address.match(/[\d０-９]+.*$/) ||
+            address.match(/[一二三四五六七八九十百千]+(?:番地|番|丁目).*$/);
+  return m ? m[0] : '';
+}
+
+// 郵便番号（既存 or 推定）を使って現行住所を組み立てる
+// matchedLen: estimateZip が一致した「都道府県+市区町村+町域」の文字数。
+//   これがあれば原文のその位置以降を suffix として使う（字・丁目表記を保持）。
+function buildCurrentAddress(originalAddress, zipcode, matchedLen) {
+  if (!zipcode || !POSTAL_MASTER) return '';
+  const ref = POSTAL_MASTER[zipcode];
+  if (!ref) return '';
+  let suffix;
+  if (typeof matchedLen === 'number' && matchedLen > 0 && matchedLen <= originalAddress.length) {
+    suffix = originalAddress.slice(matchedLen);
+  } else {
+    suffix = extractBanchiSuffix(originalAddress);
+  }
+  const head = ref.pref + ref.city + (ref.town || '');
+  return suffix ? `${head}${suffix}` : head;
+}
+
+function estimateZip(address) {
+  if (!address || !REVERSE_INDEX) return { zip: '', level: '不明', matchedLen: 0 };
+  const { byPref, prefKeysDesc } = REVERSE_INDEX;
+
+  // searchFrom: 都道府県より後ろの部分文字列
+  // baseOffset: 原文における searchFrom 開始位置（suffix 切り出し用）
+  const tryFromCity = (searchFrom, prefEntry, baseOffset) => {
+    for (const city of prefEntry.cityKeysDesc) {
+      if (searchFrom.startsWith(city)) {
+        const cityEntry = prefEntry.cities[city];
+        const afterCity = searchFrom.slice(city.length);
+        // 「字」「大字」は日本郵便の町域名に含まれないため、あれば読み飛ばして照合する
+        //   例:「虻田郡倶知安町字樺山116番地9」→ 町域「樺山」
+        const skipM = afterCity.match(/^(大字|字)/);
+        const variants = skipM ? [{ s: afterCity, skip: 0 }, { s: afterCity.slice(skipM[0].length), skip: skipM[0].length }]
+                               : [{ s: afterCity, skip: 0 }];
+        for (const v of variants) {
+          for (const town of cityEntry.townKeysDesc) {
+            if (v.s.startsWith(town)) {
+              return {
+                zip: cityEntry.townMap[town],
+                level: '町域',
+                matchedLen: baseOffset + city.length + v.skip + town.length,
+              };
+            }
+          }
+        }
+        return { zip: cityEntry.defaultZip, level: '市区町村', matchedLen: baseOffset + city.length };
+      }
+    }
+    return null;
+  };
+
+  // 1) 住所に都道府県名が含まれる場合、その直後から市区町村を探す
+  for (const pref of prefKeysDesc) {
+    const idx = address.indexOf(pref);
+    if (idx >= 0) {
+      const afterPref = address.slice(idx + pref.length);
+      const hit = tryFromCity(afterPref, byPref[pref], idx + pref.length);
+      if (hit) return hit;
+      return { zip: '', level: '不明', matchedLen: 0 };
+    }
+  }
+  // 2) 都道府県省略の住所：全都道府県で先頭一致を試す
+  for (const pref of prefKeysDesc) {
+    const hit = tryFromCity(address, byPref[pref], 0);
+    if (hit) return hit;
+  }
+  return { zip: '', level: '不明', matchedLen: 0 };
+}
+
+function normalizeZip(raw) {
+  if (!raw) return '';
+  return String(raw).replace(/[^\d]/g, '').padStart(7, '0').slice(-7);
+}
+
+function judgeOldAddress(fullAddress, zipcode) {
+  if (!fullAddress || typeof fullAddress !== 'string' || !fullAddress.trim()) return { isOld: false, reason: '' };
+  // 外国住所（台湾・中華・アメリカ・タイ等）は判定対象外
+  if (FOREIGN_KEYWORDS.test(fullAddress)) return { isOld: false, reason: '' };
+  // 建物名を分離して、住所本体だけで判定する
+  const { address } = splitAddressAndBuilding(fullAddress);
+  const reasons = [];
+  const hit = new Set();  // 同じ理由の重複抑制
+
+  // 郡判定（dict-lookup）：現行マスター → 旧郡 dict → 日本語validな未掲載郡 の順
+  const gunHit = detectGun(address);
+  if (gunHit && gunHit.status === 'extinct' && !hit.has(gunHit.gun)) {
+    const suffix = gunHit.note ? `（${gunHit.note}）` : '';
+    reasons.push(`消滅郡名${suffix}「${gunHit.gun}」`);
+    hit.add(gunHit.gun);
   }
 
-  // 消滅地名：前方一致（住所コンポーネント境界でのみマッチ）
-  // 例: 「高津町1-2-3」→ ヒット / 「高津町通り」→ スルー
+  // 市判定（dict-lookup）：現行マスター → 旧市 dict → 日本語validな未掲載市 の順
+  const cityHit = detectCity(address);
+  if (cityHit && cityHit.status === 'extinct' && !hit.has(cityHit.city)) {
+    const suffix = cityHit.note ? `（${cityHit.note}）` : '';
+    reasons.push(`消滅市名${suffix}「${cityHit.city}」`);
+    hit.add(cityHit.city);
+  }
+
+  // 東京35区時代の消滅区判定（蒲田区・小石川区・神田区 等）
+  const wardHit = detectExtinctTokyoWard(address);
+  if (wardHit && !hit.has(wardHit.oldWard)) {
+    reasons.push(`消滅区名「${wardHit.oldWard}」`);
+    hit.add(wardHit.oldWard);
+  }
+
+  // 消滅地名（ハードコード）：前後境界の両方を満たす場合のみマッチ
+  // ＋ 現行市が同名町域を持つケース（焼津市栄町・藤枝市岡部町 等）は OLD_TOWN_CONFLICTS でスキップ
+  const currentCityForConflict = (cityHit && cityHit.status === 'current') ? cityHit.city : null;
   for (const t of OLD_TOWNS) {
-    const re = new RegExp(escapeRegex(t) + ADDR_BOUNDARY);
-    if (re.test(address)) reasons.push(`消滅地名「${t}」`);
+    if (hit.has(t)) continue;
+    // 東京35区系は上の detectExtinctTokyoWard で扱う（ここでは重複検出しない）
+    if (EXTINCT_TOKYO_WARD_MAP[t]) continue;
+    const re = new RegExp(ADDR_PREBOUNDARY + escapeRegex(t) + ADDR_BOUNDARY);
+    if (!re.test(address)) continue;
+    if (currentCityForConflict && OLD_TOWN_CONFLICTS.has(`${currentCityForConflict}|${t}`)) continue;
+    reasons.push(`消滅地名「${t}」`);
+    hit.add(t);
   }
 
   const m = address.match(OLD_KANJI);
   if (m) reasons.push(`旧字体「${m[0]}」`);
   if (KANJI_BANCHI.test(address)) reasons.push('漢数字番地');
   if (KATAKANA_NO.test(address)) reasons.push('カタカナ「ノ」区切り');
+
+  // Bモード：郵便番号→現行住所との突合
+  if (zipcode && POSTAL_MASTER) {
+    const z = normalizeZip(zipcode);
+    const ref = POSTAL_MASTER[z];
+    if (!ref) {
+      reasons.push(`郵便番号「${z}」がマスターに存在しない`);
+    } else {
+      // マスターの市区町村名が住所に含まれるかチェック
+      // city は "〇〇市" or "〇〇郡××町" 形式
+      const cityPlain = ref.city;
+      if (!address.includes(cityPlain)) {
+        // 郡付きの場合は「郡なし町名」でも再チェック（住所側が郡を省略しているケース）
+        const gunMatch = cityPlain.match(/^(.+郡)(.+)$/);
+        const altCity = gunMatch ? gunMatch[2] : null;
+        if (!altCity || !address.includes(altCity)) {
+          reasons.push(`郵便番号と住所が不一致（郵便番号→「${ref.pref}${ref.city}」）`);
+        }
+      }
+    }
+  }
+
   return { isOld: reasons.length > 0, reason: reasons.join(' / ') };
 }
 
 // ============================================================
 // UI
 // ============================================================
-let workbook = null;
 let sheetData = null;
 let fileName = '';
+let mode = 'both';   // 'zip' | 'legacy' | 'both'
 
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
+const $ = id => document.getElementById(id);
+const dropZone = $('dropZone');
+const fileInput = $('fileInput');
 
 dropZone.addEventListener('click', () => fileInput.click());
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); loadFile(e.dataTransfer.files[0]); });
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('over');
+  loadFile(e.dataTransfer.files[0]);
+});
 fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
+$('runBtn').addEventListener('click', run);
+
+// モードセレクタ
+$('modeSeg').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-mode]');
+  if (!btn) return;
+  mode = btn.dataset.mode;
+  [...$('modeSeg').querySelectorAll('button')].forEach(b => {
+    b.setAttribute('aria-pressed', String(b === btn));
+  });
+  applyMode();
+});
+
+function applyMode() {
+  const legacy = (mode === 'legacy' || mode === 'both');
+  $('optConvert').style.display = legacy ? 'block' : 'none';
+  if (!legacy) $('convertCheck').checked = false;
+}
+
+function formatZip(z) {
+  const s = String(z || '').replace(/[^\d]/g, '');
+  return s.length === 7 ? s.slice(0, 3) + '-' + s.slice(3) : s;
+}
+
+function colLetter(i) {
+  let s = '';
+  i += 1;
+  while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); }
+  return s;
+}
 
 function loadFile(file) {
   if (!file) return;
   fileName = file.name;
-  document.getElementById('filename').textContent = '選択中: ' + fileName;
   const reader = new FileReader();
   reader.onload = e => {
-    const data = new Uint8Array(e.target.result);
-    workbook = XLSX.read(data, { type: 'array' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
     sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
 
-    // 列選択を構築
-    const select = document.getElementById('colSelect');
-    select.innerHTML = '';
-    if (sheetData.length > 0) {
-      const headers = sheetData[0];
-      headers.forEach((h, i) => {
-        const col = String.fromCharCode(65 + i);
-        const opt = document.createElement('option');
-        opt.value = i;
-        opt.textContent = `${col}列: ${h || '(空)'}`;
-        // 「住所」を含む列をデフォルト選択
-        if (String(h).includes('住所')) opt.selected = true;
-        select.appendChild(opt);
-      });
-    }
-    document.getElementById('configCard').style.display = 'block';
-    document.getElementById('resultCard').style.display = 'none';
+    const sel = $('colSelect');
+    const zsel = $('zipColSelect');
+    sel.innerHTML = '';
+    zsel.innerHTML = '<option value="-1">使わない</option>';
+    const headers = sheetData.length ? sheetData[0] : [];
+    headers.forEach((h, i) => {
+      const label = `${colLetter(i)}列: ${h || '（空）'}`;
+      const o = document.createElement('option');
+      o.value = i; o.textContent = label;
+      if (String(h).includes('住所')) o.selected = true;
+      sel.appendChild(o);
+      const z = document.createElement('option');
+      z.value = i; z.textContent = label;
+      if (/郵便|zip|〒/i.test(String(h))) z.selected = true;
+      zsel.appendChild(z);
+    });
+
+    $('pickedName').textContent = fileName;
+    $('pickedMeta').textContent = `／ ${Math.max(0, sheetData.length - 1).toLocaleString()}行 ${headers.length}列`;
+    $('picked').classList.add('show');
+    $('configCard').style.display = 'block';
+    $('resultCard').style.display = 'none';
+    $('runStatus').textContent = '';
+    $('runStatus').classList.remove('err');
+    applyMode();
   };
   reader.readAsArrayBuffer(file);
 }
 
-function run() {
-  if (!sheetData) return;
-  const colIdx = parseInt(document.getElementById('colSelect').value);
-  const rows = sheetData.slice(1); // ヘッダー除く
+// 既存の郵便番号列とマスターの突合（旧住所判定とは独立に評価する）
+function checkZipMatch(address, rawZip) {
+  const z = normalizeZip(rawZip);
+  if (!z || z.length !== 7) return { state: 'none', text: '' };
+  const ref = POSTAL_MASTER ? POSTAL_MASTER[z] : null;
+  if (!ref) return { state: 'bad', text: `マスターに存在しない郵便番号（${formatZip(z)}）` };
+  if (address.includes(ref.city)) return { state: 'ok', text: '一致' };
+  const gun = ref.city.match(/^(.+郡)(.+)$/);
+  if (gun && address.includes(gun[2])) return { state: 'ok', text: '一致' };
+  return { state: 'bad', text: `住所と不一致（郵便番号→${ref.pref}${ref.city}）` };
+}
 
-  let oldCount = 0;
-  const previewRows = [];
-  const resultData = [sheetData[0].concat(['旧住所フラグ', '判定理由'])];
+async function run() {
+  if (!sheetData || sheetData.length < 2) return;
+
+  const colIdx = parseInt($('colSelect').value);
+  const zipColIdx = parseInt($('zipColSelect').value);
+  const doZip = (mode === 'zip' || mode === 'both');
+  const doLegacy = (mode === 'legacy' || mode === 'both');
+  const convertOld = doLegacy && $('convertCheck').checked;
+  const geocode = $('geocodeCheck').checked;
+  const dedup = $('dedupCheck').checked;
+  const hasZipCol = zipColIdx >= 0;
+
+  const needsMaster = doZip || hasZipCol || convertOld || geocode || dedup;
+  const needsReverse = doZip || convertOld || geocode || dedup;
+
+  const runBtn = $('runBtn');
+  const statusEl = $('runStatus');
+  statusEl.classList.remove('err');
+
+  if (needsMaster) {
+    runBtn.disabled = true;
+    try {
+      await ensurePostalMaster(m => { statusEl.textContent = m || '郵便番号マスターを読み込み中（初回のみ）'; });
+      if (needsReverse) {
+        statusEl.textContent = '住所インデックスを構築中';
+        await new Promise(r => setTimeout(r, 0));
+        buildReverseIndex();
+      }
+      if (convertOld) await ensureExtinctMap(m => { statusEl.textContent = m || '旧市町村マップを読み込み中'; });
+      if (geocode) await ensureGeocoding(m => { statusEl.textContent = m || '地理データを読み込み中'; });
+    } catch (err) {
+      statusEl.classList.add('err');
+      statusEl.textContent = 'マスターを読み込めませんでした。ローカルのファイルを直接開いた場合は動作しないため、公開URL上で実行してください。';
+      runBtn.disabled = false;
+      return;
+    }
+    statusEl.textContent = '判定中';
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  const rows = sheetData.slice(1);
+
+  // 追記する列
+  const extraHeaders = [];
+  if (doZip) extraHeaders.push('郵便番号（推定）', '推定レベル', '未確定理由');
+  if (doZip && hasZipCol) extraHeaders.push('郵便番号突合結果');
+  if (doLegacy) extraHeaders.push('旧住所フラグ', '判定理由');
+  if (convertOld) extraHeaders.push('現行住所（推定）');
+  if (geocode) extraHeaders.push('緯度', '経度', '地理レベル', 'マップURL');
+  if (dedup) extraHeaders.push('正規化住所', '重複ステータス', '重複グループID');
+
+  const resultData = [sheetData[0].concat(extraHeaders)];
+  const dedupKeys = [];
+  const listRows = [];
+  let cFlag = 0, cWarn = 0, cZipFilled = 0, cConverted = 0, cGeocoded = 0;
 
   rows.forEach((row, i) => {
-    const address = String(row[colIdx] || '');
-    const { isOld, reason } = judgeOldAddress(address);
-    if (isOld) oldCount++;
-    const newRow = row.concat([isOld ? 'TRUE' : 'FALSE', reason]);
-    resultData.push(newRow);
-    if (isOld && previewRows.length < 50) {
-      previewRows.push({ rowNum: i + 2, address, reason });
+    const address = String(row[colIdx] || '').trim();
+    const rawZip = hasZipCol ? String(row[zipColIdx] || '') : '';
+    const existingZip = normalizeZip(rawZip).length === 7 ? normalizeZip(rawZip) : '';
+    const extras = [];
+    const reasons = [];        // 要対応の理由
+    const pendings = [];       // 未確定の理由
+    let isFlag = false;
+
+    // 旧住所判定（郵便番号の突合は checkZipMatch 側で行うため空文字を渡す）
+    let isOld = false, oldReason = '';
+    if (doLegacy && address) {
+      const j = judgeOldAddress(address, '');
+      isOld = j.isOld; oldReason = j.reason;
+      if (isOld) { isFlag = true; reasons.push(oldReason); }
+    }
+
+    // 住所→郵便番号の推定
+    let est = null, extHit = null;
+    if (address && (doZip || convertOld || geocode || dedup)) {
+      est = estimateZip(address);
+      if (!est.zip && (convertOld || geocode || dedup || doZip)) extHit = lookupExtinct(address);
+    }
+
+    // 下流（現行住所・緯度経度・重複）で使う郵便番号
+    let usableZip = existingZip;
+    if (!usableZip && est && est.zip) usableZip = est.zip;
+    if (!usableZip && extHit && extHit.entry.representativeZip) usableZip = extHit.entry.representativeZip;
+
+    // 郵便番号の付与：町域まで一致した場合のみ確定値として出す
+    if (doZip) {
+      if (!address) {
+        extras.push('', '不明', '住所が空欄');
+        pendings.push('住所が空欄');
+      } else if (est && est.level === '町域') {
+        cZipFilled++;
+        extras.push(formatZip(est.zip), '町域', '');
+      } else if (est && est.level === '市区町村' && est.zip) {
+        const rep = formatZip(est.zip);
+        extras.push('', '市区町村', `町域を特定できず（市区町村代表: ${rep}）`);
+        pendings.push(`町域を特定できず（市区町村代表: ${rep}）`);
+      } else if (extHit && extHit.entry.representativeZip) {
+        const rep = formatZip(extHit.entry.representativeZip);
+        extras.push('', '旧市町村マップ', `旧住所のため現行の町域を特定できず（旧市町村代表: ${rep}）`);
+        pendings.push('旧住所のため現行の町域を特定できず');
+      } else {
+        extras.push('', '不明', '住所から市区町村を特定できず');
+        pendings.push('住所から市区町村を特定できず');
+      }
+    }
+
+    // 既存郵便番号との突合
+    if (doZip && hasZipCol) {
+      const mz = checkZipMatch(address, rawZip);
+      extras.push(mz.state === 'none' ? '郵便番号なし' : mz.text);
+      if (mz.state === 'bad') { isFlag = true; reasons.push(mz.text); }
+    }
+
+    if (doLegacy) extras.push(isOld ? 'TRUE' : 'FALSE', oldReason);
+
+    // 現行住所（推定）
+    let current = '';
+    if (convertOld) {
+      if (isOld && usableZip && est && est.matchedLen > 0) {
+        current = buildCurrentAddress(address, usableZip, est.matchedLen);
+      }
+      if (isOld && !current && extHit) {
+        const prefix = address.slice(0, extHit.matchStart);
+        const suffix = address.slice(extHit.matchEnd);
+        let newName = extHit.entry.newName;
+        let repZip = extHit.entry.representativeZip;
+        const seen = new Set();
+        while (newName && !citySetHas(newName) && EXTINCT_INDEX && EXTINCT_INDEX.byOldName) {
+          if (seen.has(newName)) break;
+          seen.add(newName);
+          const next = EXTINCT_INDEX.byOldName[newName];
+          if (!next || !next.newName || next.newName === newName) break;
+          newName = next.newName;
+          if (next.representativeZip) repZip = next.representativeZip;
+        }
+        if (repZip && POSTAL_MASTER && POSTAL_MASTER[repZip]) {
+          const ref = POSTAL_MASTER[repZip];
+          if (ref.city && ref.city.startsWith(newName) && ref.city.length > newName.length) newName = ref.city;
+        }
+        current = prefix + newName + suffix;
+      }
+      if (isOld && !current) {
+        const wh = detectExtinctTokyoWard(address);
+        if (wh) current = address.slice(0, wh.matchStart) + wh.newWard + address.slice(wh.matchEnd);
+      }
+      if (isOld && !current && /[國縣區驛濱邊澤關藏櫻龍廳]/.test(address)) current = normalizeOldKanji(address);
+      if (current) { cConverted++; extras.push(current); }
+      else {
+        extras.push('');
+        if (isOld) pendings.push('現行住所を推定できず');
+      }
+    }
+
+    // 緯度経度
+    if (geocode) {
+      const geo = usableZip ? geocodeFromZip(usableZip) : null;
+      if (geo) {
+        cGeocoded++;
+        extras.push(geo.lat, geo.lng, geo.level, `https://www.google.com/maps/search/?api=1&query=${geo.lat},${geo.lng}`);
+      } else {
+        extras.push('', '', '', '');
+        pendings.push('緯度経度を特定できず');
+      }
+    }
+
+    // 重複検出（キーだけ先に作り、グループIDは後段で埋める）
+    if (dedup) {
+      let target = current || address;
+      if (usableZip && POSTAL_MASTER && POSTAL_MASTER[usableZip]) {
+        const ref = POSTAL_MASTER[usableZip];
+        if (ref.pref && !target.startsWith(ref.pref)) target = ref.pref + target;
+      }
+      extras.push(normalizeAddressKey(target), '', '');
+      dedupKeys.push({ rowIndex: resultData.length, key: normalizeAddressKey(target) });
+    }
+
+    resultData.push(row.concat(extras));
+
+    const isWarn = !isFlag && pendings.length > 0;
+    if (isFlag) cFlag++;
+    else if (isWarn) cWarn++;
+    if (isFlag || isWarn) {
+      listRows.push({
+        rowNum: i + 2,
+        address,
+        state: isFlag ? 'flag' : 'warn',
+        label: isFlag ? '要対応' : '未確定',
+        reason: (isFlag ? reasons : pendings).join(' / '),
+      });
     }
   });
 
-  const total = rows.length;
-  document.getElementById('statTotal').textContent = total.toLocaleString();
-  document.getElementById('statOld').textContent = oldCount.toLocaleString();
-  document.getElementById('statOk').textContent = (total - oldCount).toLocaleString();
-
-  // プレビューテーブル
-  const tbody = document.getElementById('previewBody');
-  tbody.innerHTML = '';
-  if (previewRows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#888;padding:20px">旧住所は検出されませんでした</td></tr>';
-  } else {
-    previewRows.forEach(r => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${r.rowNum}</td><td>${escHtml(r.address)}</td><td class="reason">${escHtml(r.reason)}</td>`;
-      tbody.appendChild(tr);
-    });
+  // 重複グループの確定
+  let dupRows = 0, dupGroups = 0;
+  if (dedup) {
+    const counts = {};
+    for (const x of dedupKeys) counts[x.key] = (counts[x.key] || 0) + 1;
+    const gid = {}; const repSeen = {}; let next = 1;
+    for (const x of dedupKeys) {
+      const cols = resultData[x.rowIndex];
+      const len = cols.length;
+      if (counts[x.key] > 1) {
+        if (!gid[x.key]) { gid[x.key] = next++; dupGroups++; }
+        if (!repSeen[x.key]) { cols[len - 2] = '代表'; repSeen[x.key] = true; }
+        else { cols[len - 2] = '重複'; dupRows++; }
+        cols[len - 1] = gid[x.key];
+      } else {
+        cols[len - 2] = '単独';
+        cols[len - 1] = '';
+      }
+    }
   }
 
-  // ダウンロードボタン
-  document.getElementById('dlBtn').onclick = () => {
+  // サマリー
+  const msgs = [];
+  if (doZip) msgs.push(`郵便番号を ${cZipFilled.toLocaleString()} 件付与`);
+  if (convertOld) msgs.push(`現行住所（推定）を ${cConverted.toLocaleString()} 件追記`);
+  if (geocode) msgs.push(`緯度経度を ${cGeocoded.toLocaleString()} 件付加`);
+  if (dedup) msgs.push(`重複 ${dupGroups.toLocaleString()} グループ / ${dupRows.toLocaleString()} 行`);
+  statusEl.textContent = msgs.join(' ／ ') || '完了';
+  runBtn.disabled = false;
+
+  const total = rows.length;
+  $('statTotal').textContent = total.toLocaleString();
+  $('statFlag').textContent = cFlag.toLocaleString();
+  $('statWarn').textContent = cWarn.toLocaleString();
+  $('statOk').textContent = (total - cFlag - cWarn).toLocaleString();
+
+  // 一覧（要対応を先に、最大50件）
+  listRows.sort((a, b) => (a.state === b.state ? a.rowNum - b.rowNum : (a.state === 'flag' ? -1 : 1)));
+  const shown = listRows.slice(0, 50);
+  $('listNote').textContent = listRows.length > shown.length
+    ? `${listRows.length.toLocaleString()}件のうち先頭50件を表示しています。全件はダウンロードしたファイルで確認できます。`
+    : '';
+  const tbody = $('previewBody');
+  tbody.innerHTML = '';
+  if (shown.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">要対応・未確定の行はありません</td></tr>';
+  } else {
+    for (const r of shown) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="num">${r.rowNum}</td>`
+        + `<td>${escHtml(r.address)}</td>`
+        + `<td><span class="badge ${r.state}">${r.label}</span></td>`
+        + `<td class="reason">${escHtml(r.reason)}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  $('dlBtn').onclick = () => {
     const ws = XLSX.utils.aoa_to_sheet(resultData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-    const base = fileName.replace(/\.[^.]+$/, '');
-    XLSX.writeFile(wb, base + '_旧住所判定済.xlsx');
+    XLSX.writeFile(wb, fileName.replace(/\.[^.]+$/, '') + '_処理済.xlsx');
   };
 
-  document.getElementById('resultCard').style.display = 'block';
-  document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth' });
+  $('resultCard').style.display = 'block';
+  $('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function escHtml(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 </script>
 </body>
