@@ -319,6 +319,11 @@
       <div class="body">
         <label class="check" id="optCityZip"><input type="checkbox" id="cityZipCheck">町域を特定できない行を市区町村の代表番号で埋める <span class="sub">郵便物は届くが町域単位の精度は落ちる</span></label>
         <label class="check" id="optKanjiNum"><input type="checkbox" id="kanjiNumCheck" checked>補正後の住所を住所列の右隣に追記する <span class="sub">旧市町村・旧区を現行に直し、番地・丁目の漢数字（壱弐参・〇を含む）と全角英数字を半角にする。補正内容も併記</span></label>
+        <div class="check" style="display:block">
+          <div>補正台帳（人が確定した補正）を追加で読み込む <span class="sub">CSV または JSON。公開の台帳（data/overrides.json）に加えて使う</span></div>
+          <input type="file" id="ovrFile" accept=".csv,.json" style="margin-top:6px">
+          <div class="sub" id="ovrInfo"></div>
+        </div>
         <label class="check"><input type="checkbox" id="geocodeCheck">緯度経度・地図URLを追記する <span class="sub">地理データ約12MBを追加読み込み</span></label>
         <label class="check"><input type="checkbox" id="dedupCheck">表記ゆれを正規化して重複を検出する</label>
       </div>
@@ -345,6 +350,10 @@
       </svg>
       処理済みファイルをダウンロード
     </button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn-sub" id="ovrTplBtn">確度C〜Eの行を補正台帳の雛形CSVでダウンロード</button>
+      <button class="btn-sub" id="ovrJsonBtn">読み込んだ補正台帳をJSONで書き出し</button>
+    </div>
     <div class="list-head">要対応・未確定の一覧</div>
     <div class="list-note" id="listNote"></div>
     <table>
@@ -1151,8 +1160,9 @@ function detectOldWard(address, est) {
 //   D: 市区町村までしか決まらない（掲載外・町域なし）
 //   E: 判定できない・矛盾（不明、区や県が決まらない、町域が複数候補、旧住所と判定したのに直せない）
 //   番地は常に未検証（住居表示の実施などで番地体系が変わる住所は直せない）
-function gradeAddress({ address, est, isOld, oldReason, current, convertedForZip, oldWard }) {
+function gradeAddress({ address, est, isOld, oldReason, current, convertedForZip, oldWard, override }) {
   if (!address) return { grade: 'E', reason: '住所が空欄' };
+  if (override) return { grade: 'B', reason: '人手補正台帳で確定' };
   const lv = (est && est.level) || '';
   if (!est || !est.zip) {
     if (est && est.cityZip) return { grade: 'D', reason: '町域を特定できず市区町村止まり' };
@@ -1184,6 +1194,101 @@ function gradeAddress({ address, est, isOld, oldReason, current, convertedForZip
   if (fixed) return { grade: 'B', reason: '変遷表に基づき現行に変換し、町域が一致' };
 
   return { grade: 'A', reason: '' };
+}
+
+// --- 人手補正台帳（人が確認して確定した補正。ルールより先に適用する）-------------
+// 形式: { match, replace, zip, source, who, date }
+//   match   : 元の住所の一部（表記ゆれは吸収して照合。空白は無視）。住所のどこに出てもよい
+//   replace : match に当たった部分を置き換える文字列（番地など残りは原文のまま）
+//   zip     : 任意。確定した郵便番号（7桁）
+//   source  : 出典（自治体の資料・確認した人など）
+// 人手で解決した旧→新の対応を溜めて、次回からルールより先に使う。
+let OVERRIDES = [];
+function stripSpaceMap(s) {
+  const t = [], idx = [];
+  const n = normAddr(s);
+  for (let i = 0; i < n.length; i++) {
+    if (/[\s　]/.test(n[i])) continue;
+    t.push(n[i]); idx.push(i);
+  }
+  return { t: t.join(''), idx };
+}
+function setOverrides(list) {
+  OVERRIDES = (list || [])
+    .filter(e => e && e.match && e.replace != null)
+    .map(e => {
+      const key = stripSpaceMap(e.match).t;
+      // 住所に県名が無くても当たるよう、先頭の都道府県を除いた形でも探す（十分に具体的な場合のみ）
+      const noPref = key.replace(/^(?:北海道|東京都|京都府|大阪府|.{2,3}県)/, '');
+      return Object.assign({}, e, { _key: key, _keyNoPref: noPref !== key && noPref.length >= 6 ? noPref : '' });
+    })
+    .filter(e => e._key)
+    .sort((a, b) => b._key.length - a._key.length);   // 長い（具体的な）ものを優先
+}
+// 住所に当たる台帳の項目を探す。{ entry, start, end }（start/end は原文の位置）
+function findOverride(address) {
+  if (!OVERRIDES.length || !address) return null;
+  const { t, idx } = stripSpaceMap(address);
+  for (const e of OVERRIDES) {
+    for (const key of [e._key, e._keyNoPref]) {
+      if (!key) continue;
+      const i = t.indexOf(key);
+      if (i < 0) continue;
+      return { entry: e, start: idx[i], end: idx[i + key.length - 1] + 1 };
+    }
+  }
+  return null;
+}
+function parseCsv(text) {
+  const rows = []; let row = [], cur = '', q = false;
+  const src = String(text || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (q) {
+      if (c === '"') { if (src[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cur); cur = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && src[i + 1] === '\n') i++;
+      row.push(cur); cur = '';
+      if (row.some(x => x !== '')) rows.push(row);
+      row = [];
+    } else cur += c;
+  }
+  row.push(cur);
+  if (row.some(x => x !== '')) rows.push(row);
+  return rows;
+}
+// CSV（列: 元の住所／補正後の住所／郵便番号／出典／確認者／確認日）→ 台帳の項目。補正後の住所が空の行は無視する
+function parseOverridesCsv(text) {
+  const rows = parseCsv(text);
+  if (!rows.length) return [];
+  const h = rows[0].map(x => x.trim());
+  const col = name => h.findIndex(x => x.startsWith(name));
+  const ci = { m: col('元の住所'), r: col('補正後'), z: col('郵便番号'), s: col('出典'), w: col('確認者'), d: col('確認日') };
+  if (ci.m < 0 || ci.r < 0) return [];
+  const out = [];
+  for (const r of rows.slice(1)) {
+    const match = (r[ci.m] || '').trim(), replace = (r[ci.r] || '').trim();
+    if (!match || !replace) continue;
+    const zip = ci.z >= 0 ? normalizeZip(r[ci.z]) : '';
+    out.push({ match, replace, zip: /^\d{7}$/.test(zip) && zip !== '0000000' ? zip : '',
+               source: ci.s >= 0 ? (r[ci.s] || '').trim() : '', who: ci.w >= 0 ? (r[ci.w] || '').trim() : '',
+               date: ci.d >= 0 ? (r[ci.d] || '').trim() : '' });
+  }
+  return out;
+}
+function csvCell(v) {
+  const t = String(v == null ? '' : v);
+  return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+// 確度C〜Eの行から、人が補正を書き込むための台帳の雛形CSVを作る（参考列は取り込み時に無視される）
+function buildOverrideTemplateCsv(rows) {
+  const head = ['元の住所', '補正後の住所', '郵便番号', '出典', '確認者', '確認日', '（参考）確度', '（参考）理由', '（参考）ツールの補正案'];
+  const lines = [head.map(csvCell).join(',')];
+  for (const r of rows) lines.push([r.addr, '', '', '', '', '', r.grade, r.reason, r.auto].map(csvCell).join(','));
+  return '\uFEFF' + lines.join('\r\n') + '\r\n';
 }
 
 // 旧区の判定と、確度Bのときの郵便番号の取り直し。
@@ -1448,6 +1553,20 @@ function buildExtinctIndex(arr) {
   return { byPref, all, byOldName };
 }
 
+// 公開の補正台帳（data/overrides.json）。無ければ空として扱う
+let PUBLIC_OVERRIDES = null;      // 読み込み済みの公開台帳（配列）
+let LOCAL_OVERRIDES = [];         // 画面から追加で読み込んだ台帳
+async function ensureOverrides() {
+  if (PUBLIC_OVERRIDES === null) {
+    try {
+      const resp = await fetch('data/overrides.json?v=' + DATA_VERSION);
+      PUBLIC_OVERRIDES = resp.ok ? await resp.json() : [];
+    } catch (e) { PUBLIC_OVERRIDES = []; }
+    if (!Array.isArray(PUBLIC_OVERRIDES)) PUBLIC_OVERRIDES = [];
+  }
+  setOverrides(PUBLIC_OVERRIDES.concat(LOCAL_OVERRIDES));
+}
+
 async function ensureExtinctMap(onProgress) {
   if (EXTINCT_INDEX) return EXTINCT_INDEX;
   if (onProgress) onProgress('旧市町村マップを読み込み中...');
@@ -1693,7 +1812,15 @@ function checkZipMatch(address, rawZip, est) {
 
 // 補正後住所を作る。旧市町村・旧区の現行化 → 漢数字・全角の半角化の順
 //   current: 旧住所を現行に直した住所（直せなければ空）／notes: 何を直したか
-function correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard }) {
+function correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard, override }) {
+  // 人手補正台帳に当たった場合は、ルールより先にその補正を採用する
+  if (override) {
+    const fixed = address.slice(0, override.start) + override.entry.replace + address.slice(override.end);
+    const half0 = convertKanjiNumbers(fixed);
+    const notes1 = ['人手補正台帳' + (override.entry.source ? `（${override.entry.source}）` : '')];
+    if (half0 !== fixed) notes1.push('漢数字・全角を半角化');
+    return { current: fixed, corrected: half0, notes: notes1 };
+  }
   let current = '';
   const notes0 = [];
   if (convertOld) {
@@ -1760,6 +1887,19 @@ dropZone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
 $('runBtn').addEventListener('click', run);
+$('ovrFile').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const text = await f.text();
+    LOCAL_OVERRIDES = /\.json$/i.test(f.name) ? JSON.parse(text) : parseOverridesCsv(text);
+    if (!Array.isArray(LOCAL_OVERRIDES)) LOCAL_OVERRIDES = [];
+    $('ovrInfo').textContent = `${LOCAL_OVERRIDES.length} 件の補正を読み込みました（補正後の住所が空の行は除く）`;
+  } catch (err) {
+    LOCAL_OVERRIDES = [];
+    $('ovrInfo').textContent = '補正台帳を読み込めませんでした';
+  }
+});
 
 // モードセレクタ
 $('modeSeg').addEventListener('click', e => {
@@ -1904,6 +2044,7 @@ async function run() {
   const needsExtinct = convertOld || doLegacy || (doZip && hasZipCol);
   const needsMaster = doZip || hasZipCol || convertOld || geocode || dedup;
   const needsReverse = doZip || convertOld || geocode || dedup;
+  await ensureOverrides();
 
   const runBtn = $('runBtn');
   const statusEl = $('runStatus');
@@ -1953,6 +2094,7 @@ async function run() {
   const listRows = [];
   let cFlag = 0, cWarn = 0, cZipFilled = 0, cConverted = 0, cGeocoded = 0;
   const gradeCount = {};
+  const ovrCandidates = [];
 
   rows.forEach((row, i) => {
     const address = String(row[colIdx] || '').trim();
@@ -1990,6 +2132,19 @@ async function run() {
         else { oldReason += ' / ' + ow.flagReason; reasons.push(ow.flagReason); }
       }
       if (ow.pending) pendings.push(ow.pending);
+    }
+
+    // 人手補正台帳（ルールより先に適用）
+    const ovr = address ? findOverride(address) : null;
+    if (ovr) {
+      const fixedAddr = address.slice(0, ovr.start) + ovr.entry.replace + address.slice(ovr.end);
+      if (ovr.entry.zip) {
+        est = { zip: ovr.entry.zip, precision: PREC.TOWN, level: '人手補正台帳', matchedLen: 0 };
+      } else {
+        const d3 = resolveZipDeep(fixedAddr);
+        if (isZipResolved(d3.est)) est = d3.est;
+      }
+      convertedForZip = '';
     }
 
     const usableZip = pickUsableZip(est);
@@ -2052,7 +2207,7 @@ async function run() {
     let current = '';
     // 補正後住所: 旧市町村・旧区を現行に直し、番地の漢数字・全角英数字を半角にする
     if (kanjiNum) {
-      const fx = correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard });
+      const fx = correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard, override: ovr });
       current = fx.current;
       if (isOld && !current) pendings.push('現行住所を推定できず');
       if (fx.notes.length) cConverted++;
@@ -2061,8 +2216,9 @@ async function run() {
 
     // 確度（A〜E）
     if (doZip || doLegacy) {
-      const gr = gradeAddress({ address, est, isOld, oldReason, current, convertedForZip, oldWard });
+      const gr = gradeAddress({ address, est, isOld, oldReason, current, convertedForZip, oldWard, override: ovr });
       gradeCount[gr.grade] = (gradeCount[gr.grade] || 0) + 1;
+      if (address && /[CDE]/.test(gr.grade)) ovrCandidates.push({ addr: address, grade: gr.grade, reason: gr.reason, auto: kanjiNum ? (current || '') : '' });
       extras.push(gr.grade, gr.reason);
     }
 
@@ -2205,6 +2361,18 @@ async function run() {
       XLSX.utils.book_append_sheet(out, ws, n);
     }
     XLSX.writeFile(out, fileName.replace(/\.[^.]+$/, '') + '_処理済.xlsx');
+  };
+
+  const dl = (name, text, type) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $('ovrTplBtn').onclick = () => dl(fileName.replace(/\.[^.]+$/, '') + '_補正台帳雛形.csv', buildOverrideTemplateCsv(ovrCandidates), 'text/csv');
+  $('ovrJsonBtn').onclick = () => {
+    const list = PUBLIC_OVERRIDES.concat(LOCAL_OVERRIDES).map(e => ({ match: e.match, replace: e.replace, zip: e.zip || '', source: e.source || '', who: e.who || '', date: e.date || '' }));
+    dl('overrides.json', JSON.stringify(list, null, 2) + '\n', 'application/json');
   };
 
   $('resultCard').style.display = 'block';

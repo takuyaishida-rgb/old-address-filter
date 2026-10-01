@@ -26,7 +26,7 @@ const api = new Function('window', 'MASTER', 'EXT', logic + `
   POSTAL_MASTER = MASTER;
   buildReverseIndex();
   EXTINCT_INDEX = buildExtinctIndex(EXT);
-  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip, applyOldWard, gradeAddress };
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip, applyOldWard, gradeAddress, setOverrides, findOverride, parseOverridesCsv, buildOverrideTemplateCsv };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -270,8 +270,25 @@ for (const [addr, want, note] of GRADE_CASES) {
   console.log(`${ok ? 'OK  ' : 'NG  '} [確度${want}] ${addr}`);
   if (!ok) console.log(`      期待=${want} 実際=${g.grade}（${g.reason}） ${note}`);
 }
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length + GRADE_CASES.length;
-const fails = ng + zng + ong + kng + fxng + wng + ocng + npng + gng;
+// --- 人手補正台帳 ---
+const OVR_CSV = '\uFEFF元の住所,補正後の住所,郵便番号,出典,確認者,確認日,（参考）確度\r\n"茨城県新治郡上大津村神立4011",茨城県土浦市神立町4011,300-0013,土浦市の資料,石田,2026-10-01,C\r\n空の行,,,,,,\r\n';
+const ovrEntries = api.parseOverridesCsv(OVR_CSV);
+let ong2 = 0;
+const chk = (label, ok, detail) => { if (!ok) ong2++; console.log(`${ok ? 'OK  ' : 'NG  '} [台帳] ${label}`); if (!ok) console.log('      ' + detail); };
+chk('CSVの取り込み（補正後が空の行は無視）', ovrEntries.length === 1 && ovrEntries[0].zip === '3000013', JSON.stringify(ovrEntries));
+api.setOverrides(ovrEntries);
+const ovAddr = '新治郡上大津村神立４０１１番地２７';
+const hit = api.findOverride(ovAddr);
+chk('住所に当たる台帳を見つける（表記ゆれ・県名なし）', !!hit && hit.start === 0, JSON.stringify(hit && hit.start));
+const fxo = api.correctAddress({ address: ovAddr, est: null, isOld: false, extHit: null, convertedForZip: '', convertOld: true, oldWard: null, override: hit });
+chk('台帳の補正が最優先で適用される', fxo.corrected === '茨城県土浦市神立町4011番地27'.replace('4011番地27', '4011番地27') && fxo.notes[0].startsWith('人手補正台帳'), fxo.corrected + ' ' + fxo.notes);
+chk('台帳に当たれば確度B', api.gradeAddress({ address: ovAddr, est: null, isOld: false, oldReason: '', current: fxo.current, convertedForZip: '', oldWard: null, override: hit }).grade === 'B', '');
+chk('当たらない住所は台帳が効かない', api.findOverride('茨城県土浦市神立町3535番地') === null, '');
+const tpl = api.buildOverrideTemplateCsv([{ addr: '新治郡上大津村神立1', grade: 'C', reason: '推定', auto: '' }]);
+chk('雛形CSVを取り込んでも、補正後が空なので何も登録されない', api.parseOverridesCsv(tpl).length === 0, tpl);
+api.setOverrides([]);
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length + GRADE_CASES.length + 5;
+const fails = ng + zng + ong + kng + fxng + wng + ocng + npng + gng + ong2;
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);
