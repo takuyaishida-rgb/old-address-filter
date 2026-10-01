@@ -558,7 +558,7 @@ const JP_PLACE_VARIANTS = {
   '俱':'倶','髙':'高','﨑':'崎','濵':'浜','濱':'浜','邉':'辺','邊':'辺','曾':'曽',
   '眞':'真','德':'徳','瀨':'瀬','齋':'斎','齊':'斉','澤':'沢','國':'国','縣':'県',
   '區':'区','驛':'駅','關':'関','櫻':'桜','龍':'竜','廳':'庁','藏':'蔵','圓':'円',
-  '舘':'館','嶋':'島','嶌':'島','峯':'峰','栁':'柳','靑':'青','檜':'桧',
+  '麴':'麹','舘':'館','嶋':'島','嶌':'島','峯':'峰','栁':'柳','靑':'青','檜':'桧',
   '塚':'塚',  // 塚（互換漢字）→ 塚
     // 﨑 → 崎
   'ヶ':'ケ',
@@ -989,8 +989,10 @@ function cityCandidates(searchFrom, prefEntry, base) {
     }
   }
   // (2) 政令市で区が書かれていない → 全区を候補にする
+  //     区が書かれている場合は補完しない（「鶴見区尻手」を全区に当てて同名の町域「鶴見」を拾う誤りを防ぐ）
+  const wardWritten = list.length > 0 && /^.+市.+区$/.test(list[0].city);
   for (const shi in prefEntry.wardsOf) {
-    if (!searchFrom.startsWith(shi)) continue;
+    if (wardWritten || !searchFrom.startsWith(shi)) continue;
     for (const w of prefEntry.wardsOf[shi]) {
       list.push({ city: w, tail: searchFrom.slice(shi.length), base: base + shi.length, label: '（区を補完）' });
     }
@@ -1105,6 +1107,23 @@ function resolveZipFromExtinct(address, hit) {
   const prefix = address.slice(0, hit.matchStart);
   const suffix = address.slice(hit.matchEnd);
   const plain = prefix + name + suffix;
+
+  // 旧「市」名は新市の町域名の先頭に残ることが多い
+  //   例: 旧「久居市新町」→ 現「津市久居新町」（「津市新町」という別の町域を先に掴まない）
+  //       旧「平良市字下里」→ 現「宮古島市平良下里」
+  const oldCoreCity = hit.entry.oldName.replace(/^.+?郡/, '');
+  if (/.市$/.test(oldCoreCity) && oldCoreCity !== name) {
+    const bareCity = oldCoreCity.replace(/市$/, '');
+    const cand = prefix + name + bareCity + suffix.replace(/^(大字|字)/, '');
+    const e = resolveZip(cand);
+    if (isZipResolved(e) && e.precision >= PREC.TOWN) {
+      const town = normAddr((POSTAL_MASTER[e.zip] || {}).town || '');
+      if (town.startsWith(normAddr(bareCity)) && town.length > bareCity.length) {
+        return { est: e, address: cand, name };
+      }
+    }
+  }
+
   const plainEst = resolveZip(plain);
   if (isZipResolved(plainEst) && plainEst.precision >= PREC.TOWN) {
     return { est: plainEst, address: plain, name };
@@ -1390,6 +1409,16 @@ function judgeOldAddress(fullAddress, zipcode) {
     hit.add(t);
   }
 
+  // 旧市町村マップによる判定（野々市町→野々市市 など、ハードコード一覧に無い町村を拾う）
+  //   市区町村の位置（都道府県・郡の直後）に出現した場合だけ採用する。町域名との誤検知を避けるため
+  if (reasons.length === 0 || !reasons.some(r => r.startsWith('消滅'))) {
+    const eh = lookupExtinct(address);
+    if (eh && !citySetHas(eh.entry.oldName)) {
+      const before = address.slice(0, eh.matchStart).replace(/^(?:北海道|東京都|京都府|大阪府|.{2,3}県)/, '');
+      if (!before.trim()) reasons.push(`消滅市町村名「${eh.entry.oldName}」（現: ${resolveExtinctName(eh)}）`);
+    }
+  }
+
   const m = address.match(OLD_KANJI);
   if (m) reasons.push(`旧字体「${m[0]}」`);
   if (KANJI_BANCHI.test(address)) reasons.push('漢数字番地');
@@ -1417,6 +1446,48 @@ function judgeOldAddress(fullAddress, zipcode) {
   }
 
   return { isOld: reasons.length > 0, reason: reasons.join(' / ') };
+}
+
+function formatZip(z) {
+  const s = String(z || '').replace(/[^\d]/g, '');
+  return s.length === 7 ? s.slice(0, 3) + '-' + s.slice(3) : s;
+}
+
+function checkZipMatch(address, rawZip, est) {
+  const z = normalizeZip(rawZip);
+  if (!z || z.length !== 7) return { state: 'none', text: '' };
+  const ref = POSTAL_MASTER ? POSTAL_MASTER[z] : null;
+  if (!ref) return { state: 'bad', text: `マスターに存在しない郵便番号（${formatZip(z)}）` };
+  // 下4桁0000は市区町村の代表（町域が引けなかったときの仮番号）。町域まで特定できていない
+  if (z.slice(3) === '0000') {
+    const hint = est && isZipResolved(est) && est.zip !== z
+      ? `住所からは ${formatZip(est.zip)} と推定` : '住所の町域が現行マスターに無い可能性（旧町名・町名なし番地など）';
+    return { state: 'bad', text: `郵便番号が市区町村の代表番号（${formatZip(z)}）で町域未確定。${hint}` };
+  }
+  // 異体字を寄せてから比較する（例: マスターの「宝塚市」は塚がU+FA10のことがある）
+  const addr = normalizePlace(address);
+  const city = normalizePlace(ref.city);
+  // 住所が旧市町村名でも、郵便番号が現行の合併先を指していれば矛盾ではない（旧住所かどうかは別列で判定する）
+  const old = lookupExtinct(address);
+  if (old) {
+    const now = normalizePlace(resolveExtinctName(old));
+    if (now && city.includes(now.replace(/^.+?郡/, ''))) {
+      return { state: 'ok', text: `一致（旧市町村名。現行: ${resolveExtinctName(old)}）` };
+    }
+  }
+  if (addr.includes(city)) return { state: 'ok', text: '一致' };
+  const gun = city.match(/^(.+郡)(.+)$/);
+  if (gun && addr.includes(gun[2])) return { state: 'ok', text: '一致' };
+  // 政令市の区が住所側で省略されているだけなら郵便番号は正しい
+  const seirei = city.match(/^(.+市)(.+区)$/);
+  if (seirei && addr.includes(seirei[1])) {
+    // 住所に別の区が書かれているなら省略ではない（区の再編で旧区のままの可能性）
+    const after = addr.slice(addr.indexOf(seirei[1]) + seirei[1].length);
+    const wardWritten = after.match(/^[^\d]{1,5}?区/);
+    if (!wardWritten) return { state: 'ok', text: `一致（住所に区の記載なし: ${ref.city}）` };
+    return { state: 'bad', text: `住所の区（${wardWritten[0]}）と郵便番号の区が異なる（郵便番号→${ref.pref}${ref.city}。区の再編で旧区のままの可能性）` };
+  }
+  return { state: 'bad', text: `住所と不一致（郵便番号→${ref.pref}${ref.city}）` };
 }
 
 // ============================================================
@@ -1464,11 +1535,6 @@ function applyMode() {
   if (!legacy) $('convertCheck').checked = false;
   $('optCityZip').style.display = zip ? 'block' : 'none';
   if (!zip) $('cityZipCheck').checked = false;
-}
-
-function formatZip(z) {
-  const s = String(z || '').replace(/[^\d]/g, '');
-  return s.length === 7 ? s.slice(0, 3) + '-' + s.slice(3) : s;
 }
 
 function colLetter(i) {
@@ -1578,25 +1644,6 @@ $('sheetSelect').addEventListener('change', e => selectSheet(e.target.value));
 $('headerSelect').addEventListener('change', e => { headerRow = parseInt(e.target.value); applyHeaderRow(); });
 
 // 既存の郵便番号列とマスターの突合（旧住所判定とは独立に評価する）
-function checkZipMatch(address, rawZip) {
-  const z = normalizeZip(rawZip);
-  if (!z || z.length !== 7) return { state: 'none', text: '' };
-  const ref = POSTAL_MASTER ? POSTAL_MASTER[z] : null;
-  if (!ref) return { state: 'bad', text: `マスターに存在しない郵便番号（${formatZip(z)}）` };
-  // 異体字を寄せてから比較する（例: マスターの「宝塚市」は塚がU+FA10のことがある）
-  const addr = normalizePlace(address);
-  const city = normalizePlace(ref.city);
-  if (addr.includes(city)) return { state: 'ok', text: '一致' };
-  const gun = city.match(/^(.+郡)(.+)$/);
-  if (gun && addr.includes(gun[2])) return { state: 'ok', text: '一致' };
-  // 政令市の区が住所側で省略されているだけなら郵便番号は正しい
-  const seirei = city.match(/^(.+市)(.+区)$/);
-  if (seirei && addr.includes(seirei[1])) {
-    return { state: 'ok', text: `一致（住所に区の記載なし: ${ref.city}）` };
-  }
-  return { state: 'bad', text: `住所と不一致（郵便番号→${ref.pref}${ref.city}）` };
-}
-
 async function run() {
   if (!workbook || !dataRows.length) return;
 
@@ -1610,6 +1657,8 @@ async function run() {
   const dedup = $('dedupCheck').checked;
   const hasZipCol = zipColIdx >= 0;
 
+  // 旧市町村マップは、現行住所の変換だけでなく旧住所の判定・郵便番号突合にも使う
+  const needsExtinct = convertOld || doLegacy || (doZip && hasZipCol);
   const needsMaster = doZip || hasZipCol || convertOld || geocode || dedup;
   const needsReverse = doZip || convertOld || geocode || dedup;
 
@@ -1617,7 +1666,7 @@ async function run() {
   const statusEl = $('runStatus');
   statusEl.classList.remove('err');
 
-  if (needsMaster) {
+  if (needsMaster || needsExtinct) {
     runBtn.disabled = true;
     try {
       await ensurePostalMaster(m => { statusEl.textContent = m || '郵便番号マスターを読み込み中（初回のみ）'; });
@@ -1626,7 +1675,7 @@ async function run() {
         await new Promise(r => setTimeout(r, 0));
         buildReverseIndex();
       }
-      if (convertOld) await ensureExtinctMap(m => { statusEl.textContent = m || '旧市町村マップを読み込み中'; });
+      if (needsExtinct) await ensureExtinctMap(m => { statusEl.textContent = m || '旧市町村マップを読み込み中'; });
       if (geocode) await ensureGeocoding(m => { statusEl.textContent = m || '地理データを読み込み中'; });
     } catch (err) {
       statusEl.classList.add('err');
@@ -1727,7 +1776,7 @@ async function run() {
 
     // 既存郵便番号との突合
     if (doZip && hasZipCol) {
-      const mz = checkZipMatch(address, rawZip);
+      const mz = checkZipMatch(address, rawZip, est);
       extras.push(mz.state === 'none' ? '郵便番号なし' : mz.text);
       if (mz.state === 'bad') { isFlag = true; reasons.push(mz.text); }
     }

@@ -31,7 +31,7 @@ const api = new Function('window', 'MASTER', 'EXT', logic + `
   const byOldName = {};
   for (const e of EXT) if (e.oldName && !byOldName[e.oldName]) byOldName[e.oldName] = e;
   EXTINCT_INDEX = { byPref, all: EXT.slice().sort((a, b) => b.oldName.length - a.oldName.length), byOldName };
-  return { resolveZipDeep, isZipResolved };
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -73,6 +73,14 @@ const CASES = [
   ['和歌山県伊都郡高野口町大字田原186番地', '649-7216', '同上'],
   ['空知郡栗沢町字茂世丑338番地', '068-0114', '合併後の町域名に旧町名が前置される'],
   ['群馬県群馬郡群馬町大字井出1704番地1', '370-3534', '同上（井出町）'],
+  // 区名と同名の町域を持つ政令市（区が書かれているのに区補完で同名町域を拾わない）
+  ['横浜市鶴見区尻手一丁目１番８－６０３号', '230-0003', '鶴見区に町域「鶴見」がある'],
+  ['千葉市中央区本町二丁目６番３６号', '260-0012', '中央区に町域「中央」がある'],
+  // 旧市名が新市の町域名の先頭に残る
+  ['三重県久居市新町612番地5', '514-1118', '津市新町ではなく津市久居新町'],
+  ['沖縄県平良市字下里719番地', '906-0013', '宮古島市平良下里（字を落とす）'],
+  // 異体字
+  ['東京都千代田区麴町三丁目５番１３号', '102-0083', '麴（U+9E74）と麹'],
   // 掲載外
   ['雨龍郡妹背牛町字妹背牛361番地', '079-0500', '町域の登録が無い → 以下に掲載がない場合'],
   ['枝幸郡歌登町大字歌登村字上幌別六線120番地', '098-5800', '旧住所＋掲載外'],
@@ -91,4 +99,45 @@ for (const [addr, want, note] of CASES) {
   if (!ok) console.log(`      期待=${want || '(未確定)'} 実際=${got || '(未確定)'} [${d.est.level}] ${note}`);
 }
 console.log(`\n${CASES.length - ng} / ${CASES.length} 通過${ng ? `（NG ${ng}件）` : ''}`);
-process.exit(ng ? 1 : 0);
+// --- 既存の郵便番号列との突合・旧住所判定 ---
+// [住所, 郵便番号, 期待state, 結果の文言に含まれるべき語, 観点]
+const ZIP_CASES = [
+  ['愛知県一宮市三ツ井五丁目3番1号', '491-0000', 'bad', '491-0827', '下4桁0000は町域未確定。住所から推定した番号を提示'],
+  ['東京都葛飾区下小松町439番地', '124-0000', 'bad', '町域未確定', '町域が引けない旧町名'],
+  ['愛知県一宮市三ツ井五丁目3番1号', '491-0827', 'ok', '', '正しい番号'],
+  ['川崎市高津区宮崎二丁目11番地11', '216-0033', 'bad', '旧区', '区が書かれていて番号は別の区（高津区→宮前区）'],
+  ['横浜市緑区さつきが丘2番地46', '227-0053', 'bad', '旧区', '緑区→青葉区'],
+  ['千葉市末広町一丁目98番地', '260-0843', 'ok', '', '区の省略は矛盾ではない'],
+  ['埼玉県大宮市大字小深作946番地8', '337-0005', 'ok', '旧市町村名', '旧市名でも番号が現行の合併先なら矛盾ではない'],
+  ['三重県久居市新町612番地5', '514-1118', 'ok', '旧市町村名', '同上'],
+];
+let zng = 0;
+for (const [addr, zip, state, word, note] of ZIP_CASES) {
+  const est = api.resolveZipDeep(addr).est;
+  const r = api.checkZipMatch(addr, zip, est);
+  const ok = r.state === state && r.text.includes(word);
+  if (!ok) zng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [突合] ${addr} / ${zip}`);
+  if (!ok) console.log(`      期待=${state}+「${word}」 実際=${r.state} ${r.text} ${note}`);
+}
+const OLD_CASES = [
+  ['石川県石川郡野々市町本町三丁目7番12号', '消滅市町村名', '旧市町村マップの町村（ハードコード一覧に無い）'],
+  ['岩手県和賀郡湯田町29地割70番地6', '消滅市町村名', '同上'],
+  ['石川県野々市市本町三丁目7番12号', '', '現行は誤検知しない'],
+  ['埼玉県さいたま市浦和区高砂三丁目15番1号', '', '現行は誤検知しない'],
+  ['埼玉県浦和市原山四丁目3番23号', '消滅市名', '既存の市名判定は維持（二重に付けない）'],
+];
+let ong = 0;
+for (const [addr, word, note] of OLD_CASES) {
+  const r = api.judgeOldAddress(addr, '');
+  const ok = word ? r.reason.includes(word) : !r.isOld;
+  const dup = (r.reason.match(/消滅/g) || []).length > 1;
+  if (!ok || dup) ong++;
+  console.log(`${ok && !dup ? 'OK  ' : 'NG  '} [旧住所] ${addr}`);
+  if (!ok || dup) console.log(`      期待=${word || '(旧住所でない)'} 実際=${r.reason || '(なし)'} ${note}`);
+}
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length;
+const fails = ng + zng + ong;
+console.log(`
+全体 ${total - fails} / ${total} 通過`);
+process.exit(fails ? 1 : 0);
