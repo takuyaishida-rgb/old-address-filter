@@ -1026,8 +1026,9 @@ function resolveZip(rawAddress) {
   }
   if (!prefs.length) prefs = prefKeysDesc.map(pref => ({ pref, from: address, base: 0 }));
 
-  const results = [];
+  const perPref = [];
   for (const p of prefs) {
+    const results = [];
     const entryPref = byPref[p.pref];
     const cands = cityCandidates(p.from, entryPref, p.base);
     const wardCands = cands.filter(c => c.label === '（区を補完）');
@@ -1044,18 +1045,37 @@ function resolveZip(rawAddress) {
       const cl = cityLevelResult(entryPref.cities[c.city], c.base);
       if (cl.zip || cl.cityZip) results.push(Object.assign({}, cl, { level: cl.level + c.label, city: c.city, tail: c.tail, label: c.label, pref: p.pref }));
     }
-    if (results.length) {
-      // 都道府県が特定できている場合は、その県の結果だけで判断する
-      if (prefs.length === 1) break;
-      break;
-    }
-    // 区を補完する探索で1件も町域が当たらなければ、この県は該当なしとみなす
+    if (results.length) perPref.push(results);
     void wardCands;
   }
 
-  if (!results.length) {
+  if (!perPref.length) {
     return { zip: '', precision: PREC.NONE, level: '不明', matchedLen: 0 };
   }
+  const ests = perPref.map(pickBestEst);
+  if (ests.length === 1) return ests[0];
+
+  // 都道府県が書かれていない住所は全県を調べる。同名の市区町村（伊達市・府中市など）が複数県にあり、
+  // 最初に当たった県の結果で確定すると別の県の住所に誤付与するため、県をまたいで比べる。
+  //   確度（町域まで当たったか）→ 一致した町域名の長さ で最良を選び、同点が複数県にあれば特定できないとする
+  const rank = e => (e.precision || 0) * 100 + Math.min(e.townLen || 0, 99);
+  const top = Math.max(...ests.map(rank));
+  const tops = ests.filter(e => rank(e) === top);
+  if (tops.length === 1) return tops[0];
+  if (top > 0) {
+    const prefsHit = [...new Set(tops.map(e => e.pref).filter(Boolean))];
+    if (prefsHit.length > 1) {
+      return {
+        zip: '', precision: PREC.NONE, level: '都道府県が特定できない', matchedLen: tops[0].matchedLen || 0,
+        candidates: prefsHit.slice(0, 5), ambiguousCount: prefsHit.length,
+      };
+    }
+  }
+  return tops[0];
+}
+
+// 1つの県の候補（results）から、最良の結果を決める
+function pickBestEst(results) {
 
   // 確度 → 一致した町域名の長さ で選ぶ。同点が複数あれば「特定できない」として返す
   // 町域名が当たった行（未確定でも）は、市区町村レベルの結果より優先して扱う
@@ -1210,7 +1230,7 @@ function resolveExtinctName(hit) {
   while (name && !citySetHas(name) && EXTINCT_INDEX && EXTINCT_INDEX.byOldName) {
     if (seen.has(name)) break;
     seen.add(name);
-    const next = EXTINCT_INDEX.byOldName[name];
+    const next = EXTINCT_INDEX.byOldName[`${hit.entry.prefecture}|${name}`];
     if (!next || !next.newName || next.newName === name) break;
     name = next.newName;
   }
@@ -1423,7 +1443,8 @@ function buildExtinctIndex(arr) {
   // oldName 直引き（チェーン解決用）：「保谷市 → 西東京市」など
   const byOldName = {};
   for (const e of arr) {
-    if (!byOldName[e.oldName]) byOldName[e.oldName] = e;
+    const k = `${e.prefecture}|${e.oldName}`;   // 同名の町村が別県にあるため県を含める
+    if (!byOldName[k]) byOldName[k] = e;
   }
   return { byPref, all, byOldName };
 }
@@ -1675,8 +1696,18 @@ function checkZipMatch(address, rawZip, est) {
 //   current: 旧住所を現行に直した住所（直せなければ空）／notes: 何を直したか
 function correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard }) {
   let current = '';
+  const notes0 = [];
   if (convertOld) {
-    if (isOld && est && est.zip && isZipResolved(est) && est.matchedLen > 0) {
+    // 部分一致（旧町村名を手がかりに町域を1つに絞ったもの）は、町域まで直すと実在しない住所を作りうる
+    // （例: 田無市本町→「西東京市田無町田無本町」）。この場合は市区町村名だけを現行にして、町域は原文のまま残す
+    const partial = !!(est && /部分一致/.test(est.level || ''));
+    if (partial && extHit) {
+      const oldCore = extHit.entry.oldName.replace(/^.+?郡/, '');
+      const keepOld = /[町村]$/.test(oldCore) ? oldCore : '';   // 旧町村名は新しい町域名の一部に残ることが多いので消さない
+      current = address.slice(0, extHit.matchStart) + resolveExtinctName(extHit) + keepOld + address.slice(extHit.matchEnd);
+      notes0.push('市区町村名のみ現行化（町域は原文のまま・要確認）');
+    }
+    if (!partial && isOld && est && est.zip && isZipResolved(est) && est.matchedLen > 0) {
       // 旧住所を変換して解決した場合、matchedLen は変換後の住所での位置なので、変換後の住所を基準にする
       current = buildCurrentAddress(convertedForZip || address, est);
     }
@@ -1692,8 +1723,8 @@ function correctAddress({ address, est, isOld, extHit, convertedForZip, convertO
     if (isOld && !current && /[國縣區驛濱邊澤關藏櫻龍廳]/.test(address)) current = normalizeOldKanji(address);
   }
   let corrected = current || address;
-  const notes = [];
-  if (current) notes.push(oldWard && oldWard.grade === 'B' ? `旧区を現行に変換（${oldWard.oldWard}→${oldWard.confirmed}）` : '旧住所を現行に変換');
+  const notes = notes0.slice();
+  if (current && !notes0.length) notes.push(oldWard && oldWard.grade === 'B' ? `旧区を現行に変換（${oldWard.oldWard}→${oldWard.confirmed}）` : '旧住所を現行に変換');
   // 旧区: 再編表の裏付けがあるもの（確度B）だけ直す。裏付けの無いもの（確度C）は直さず、理由欄に候補を出す
   if (!current && oldWard && oldWard.grade === 'B') {
     corrected = address.slice(0, oldWard.start) + oldWard.confirmed + address.slice(oldWard.end);
@@ -1971,6 +2002,12 @@ async function run() {
         // 町域まで一致（小字で絞れた／区や郡を補った／部分一致で一意だった場合を含む）
         cZipFilled++;
         extras.push(formatZip(est.zip), convertedForZip ? est.level + '（旧住所を変換）' : est.level, '');
+      } else if (est && (est.level === '都道府県が特定できない' || est.level === '許容区に町域なし')) {
+        const r = est.level === '都道府県が特定できない'
+          ? `都道府県が書かれておらず、同じ住所が複数県にある（${(est.candidates || []).join('・')}）`
+          : '旧市の政令市化後の区のどれにも該当する町域が無い（区を決められません）';
+        extras.push('', est.level, r);
+        pendings.push(r);
       } else if (est && est.level === '区が特定できない') {
         const r = `複数の区に同じ町域があり区を特定できません（${(est.candidates || []).join('・')}）`;
         extras.push('', est.level, r);

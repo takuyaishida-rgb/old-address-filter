@@ -157,6 +157,9 @@ for (const [src, want] of KANJI_CASES) {
 const FIX_CASES = [
   // [住所, 補正後住所, 補正内容に含まれるべき語, 含まれてはいけない語]
   ['埼玉県大宮市大字小深作九四六番地の八', '埼玉県さいたま市見沼区小深作946番地の8', '旧住所', ''],
+  // 部分一致（町域まで直すと実在しない住所になる）→ 市区町村名だけ現行化し、町域は原文のまま
+  ['東京都田無市本町3丁目1番1号', '東京都西東京市本町3丁目1番1号', '市区町村名のみ', '西東京市田無町'],
+  ['岩手県胆沢郡前沢町字五合田100', '岩手県奥州市前沢町字五合田100', '市区町村名のみ', ''],
   ['三重県久居市新町六壱弐番地の五', '三重県津市久居新町612番地の5', '旧住所', ''],
   ['沖縄県平良市字下里７１９番地', '沖縄県宮古島市平良下里719番地', '旧住所', ''],
   ['石川県石川郡野々市町本町三丁目七番壱弐号', '石川県野々市市本町3丁目7番12号', '旧住所', ''],
@@ -215,8 +218,23 @@ for (const [addr, forbid, wantCity] of OLDCITY_CASES) {
   console.log(`${ok ? 'OK  ' : 'NG  '} [旧市→区] ${addr}`);
   if (!ok) console.log(`      実際=${e.city} ${e.level} zip=${e.zip}`);
 }
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length;
-const fails = ng + zng + ong + kng + fxng + wng + ocng;
+// 都道府県が書かれていない住所: 最初に当たった県で確定せず、県をまたいで比べる
+const NOPREF_CASES = [
+  // [住所, 期待する郵便番号（空なら未確定）, 観点]
+  ['伊達市梅本町61番地', '052-0022', '福島県の伊達市は「掲載外」止まり、北海道は町域まで当たる → 北海道'],
+  ['東京都府中市本町1番1号', '183-0027', '都道府県あり（同名の府中市がある広島県に引きずられない）'],
+];
+let npng = 0;
+for (const [addr, want, note] of NOPREF_CASES) {
+  const d = api.resolveZipDeep(addr);
+  const got = api.isZipResolved(d.est) ? fmt(d.est.zip) : '';
+  const ok = got === want;
+  if (!ok) npng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [県名なし] ${addr}`);
+  if (!ok) console.log(`      期待=${want || '(未確定)'} 実際=${got || '(未確定)'} [${d.est.level}] ${note}`);
+}
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length;
+const fails = ng + zng + ong + kng + fxng + wng + ocng + npng;
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);
