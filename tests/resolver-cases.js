@@ -25,13 +25,8 @@ const extinct = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'extinct_muni
 const api = new Function('window', 'MASTER', 'EXT', logic + `
   POSTAL_MASTER = MASTER;
   buildReverseIndex();
-  const byPref = {};
-  for (const e of EXT) { const k = e.prefecture || '不明'; (byPref[k] = byPref[k] || []).push(e); }
-  for (const k in byPref) byPref[k].sort((a, b) => b.oldName.length - a.oldName.length);
-  const byOldName = {};
-  for (const e of EXT) if (e.oldName && !byOldName[e.oldName]) byOldName[e.oldName] = e;
-  EXTINCT_INDEX = { byPref, all: EXT.slice().sort((a, b) => b.oldName.length - a.oldName.length), byOldName };
-  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip };
+  EXTINCT_INDEX = buildExtinctIndex(EXT);
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -102,14 +97,14 @@ console.log(`\n${CASES.length - ng} / ${CASES.length} 通過${ng ? `（NG ${ng}�
 // --- 既存の郵便番号列との突合・旧住所判定 ---
 // [住所, 郵便番号, 期待state, 結果の文言に含まれるべき語, 観点]
 const ZIP_CASES = [
-  ['愛知県一宮市三ツ井五丁目3番1号', '491-0000', 'bad', '491-0827', '下4桁0000は町域未確定。住所から推定した番号を提示'],
-  ['東京都葛飾区下小松町439番地', '124-0000', 'bad', '町域未確定', '町域が引けない旧町名'],
+  ['愛知県一宮市三ツ井五丁目3番1号', '491-0000', 'warn', '491-0827', '下4桁0000は町域未確定の仮番号（品質情報）。住所から推定した番号を併記'],
+  ['東京都葛飾区下小松町439番地', '124-0000', 'warn', '町域未確定', '町域が引けていない'],
   ['愛知県一宮市三ツ井五丁目3番1号', '491-0827', 'ok', '', '正しい番号'],
-  ['川崎市高津区宮崎二丁目11番地11', '216-0033', 'bad', '旧区', '区が書かれていて番号は別の区（高津区→宮前区）'],
-  ['横浜市緑区さつきが丘2番地46', '227-0053', 'bad', '旧区', '緑区→青葉区'],
+  ['川崎市高津区宮崎二丁目11番地11', '216-0033', 'warn', '区が異なる', '区が食い違う。どちらが正しいかは番号から言えないので品質情報にとどめる'],
   ['千葉市末広町一丁目98番地', '260-0843', 'ok', '', '区の省略は矛盾ではない'],
-  ['埼玉県大宮市大字小深作946番地8', '337-0005', 'ok', '旧市町村名', '旧市名でも番号が現行の合併先なら矛盾ではない'],
-  ['三重県久居市新町612番地5', '514-1118', 'ok', '旧市町村名', '同上'],
+  ['埼玉県大宮市大字小深作946番地8', '337-0005', 'skip', '照合対象外', '旧市名は現行の市区町村名と比べない（「一致」とは表示しない）'],
+  ['三重県久居市新町612番地5', '514-1118', 'skip', '照合対象外', '同上'],
+  ['東京都千代田区麴町三丁目5番13号', '999-9999', 'bad', '存在しない', 'マスターに無い番号'],
 ];
 let zng = 0;
 for (const [addr, zip, state, word, note] of ZIP_CASES) {
@@ -131,7 +126,7 @@ const OLD_CASES = [
 ];
 let ong = 0;
 for (const [addr, word, note] of OLD_CASES) {
-  const r = api.judgeOldAddress(addr, '');
+  const r = api.judgeOldAddress(addr);
   const ok = word ? r.reason.includes(word) : !r.isOld;
   const dup = (r.reason.match(/消滅/g) || []).length > 1;
   if (!ok || dup) ong++;
@@ -160,27 +155,27 @@ for (const [src, want] of KANJI_CASES) {
   if (!ok) console.log(`      期待=${want} 実際=${got}`);
 }
 const FIX_CASES = [
-  // [住所, 既存郵便番号, 補正後住所に含まれるべき文字列, 補正内容に含まれるべき語]
-  ['埼玉県大宮市大字小深作九四六番地の八', '337-0005', '埼玉県さいたま市見沼区小深作946番地の8', '旧住所'],
-  ['三重県久居市新町六壱弐番地の五', '514-1118', '三重県津市久居新町612番地の5', '旧住所'],
-  ['沖縄県平良市字下里７１９番地', '906-0013', '沖縄県宮古島市平良下里719番地', '旧住所'],
-  ['石川県石川郡野々市町本町三丁目七番壱弐号', '921-8815', '石川県野々市市本町3丁目7番12号', '旧住所'],
-  ['川崎市高津区宮崎二丁目１１番地１１', '216-0033', '川崎市宮前区宮崎2丁目11番地11', '区を'],
-  ['神奈川県横浜市緑区さつきが丘弐番地四六', '227-0053', '神奈川県横浜市青葉区さつきが丘2番地46', '区を'],
-  ['草加市氷川町七番地参', '340-0034', '草加市氷川町7番地3', '半角化'],
+  // [住所, 補正後住所, 補正内容に含まれるべき語, 含まれてはいけない語]
+  ['埼玉県大宮市大字小深作九四六番地の八', '埼玉県さいたま市見沼区小深作946番地の8', '旧住所', ''],
+  ['三重県久居市新町六壱弐番地の五', '三重県津市久居新町612番地の5', '旧住所', ''],
+  ['沖縄県平良市字下里７１９番地', '沖縄県宮古島市平良下里719番地', '旧住所', ''],
+  ['石川県石川郡野々市町本町三丁目七番壱弐号', '石川県野々市市本町3丁目7番12号', '旧住所', ''],
+  ['草加市氷川町七番地参', '草加市氷川町7番地3', '半角化', '旧住所'],
+  // 区の書き換えは郵便番号を根拠にしないので行わない（旧区の判定は工程2で住所側から作り直す）
+  ['川崎市高津区宮崎二丁目１１番地１１', '川崎市高津区宮崎2丁目11番地11', '半角化', '区を'],
+  ['神奈川県横浜市緑区さつきが丘弐番地四六', '神奈川県横浜市緑区さつきが丘2番地46', '半角化', '区を'],
 ];
 let fxng = 0;
-for (const [addr, zip, want, word] of FIX_CASES) {
+for (const [addr, want, word, ng_word] of FIX_CASES) {
   const d = api.resolveZipDeep(addr);
-  const isOld = api.judgeOldAddress(addr, '').isOld;
+  const isOld = api.judgeOldAddress(addr).isOld;
   const extHit = (!api.isZipResolved(d.est) || d.converted) ? api.lookupExtinct(addr) : null;
-  let usableZip = api.normalizeZip(zip);
-  const mz = api.checkZipMatch(addr, zip, d.est);
-  const fx = api.correctAddress({ address: addr, est: d.est, usableZip, isOld, extHit, convertedForZip: d.converted, mz, convertOld: true });
-  const ok = fx.corrected === want && fx.notes.join('/').includes(word);
+  const fx = api.correctAddress({ address: addr, est: d.est, isOld, extHit, convertedForZip: d.converted, convertOld: true });
+  const notes = fx.notes.join('/');
+  const ok = fx.corrected === want && notes.includes(word) && (!ng_word || !notes.includes(ng_word));
   if (!ok) fxng++;
   console.log(`${ok ? 'OK  ' : 'NG  '} [補正] ${addr}`);
-  if (!ok) console.log(`      期待=${want} 実際=${fx.corrected} [${fx.notes.join('/')}]`);
+  if (!ok) console.log(`      期待=${want} 実際=${fx.corrected} [${notes}]`);
 }
 const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length;
 const fails = ng + zng + ong + kng + fxng;
