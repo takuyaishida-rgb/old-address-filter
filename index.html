@@ -1742,7 +1742,11 @@ async function run() {
 
   // ヘッダー行より上の行（タイトル行など）はそのまま残す
   const resultData = allRows.slice(0, headerRow).map(r => r.slice());
-  resultData.push(headers.concat(extraHeaders));
+  // 追記列の開始位置をそろえるため、見出しより長い行があればその幅に合わせる
+  const width = Math.max(headers.length, ...rows.map(r => r.length));
+  const headBase = headers.slice();
+  while (headBase.length < width) headBase.push('');
+  resultData.push(headBase.concat(extraHeaders));
   const dedupKeys = [];
   const listRows = [];
   let cFlag = 0, cWarn = 0, cZipFilled = 0, cConverted = 0, cGeocoded = 0;
@@ -1873,7 +1877,9 @@ async function run() {
       dedupKeys.push({ rowIndex: resultData.length, key: normalizeAddressKey(target) });
     }
 
-    resultData.push(row.concat(extras));
+    const base = row.slice();
+    while (base.length < width) base.push('');   // 短い行は列位置がずれないよう空欄で埋める
+    resultData.push(base.concat(extras));
 
     const isWarn = !isFlag && pendings.length > 0;
     if (isFlag) cFlag++;
@@ -1909,6 +1915,25 @@ async function run() {
       }
     }
   }
+
+  // 元の列と変換後の列を隣り合わせに並べる
+  //   住所（半角数字化）→ 住所列の右隣／郵便番号（推定）→ 既存の郵便番号列の右隣（無ければ住所列側）
+  const moveCol = (name, anchor) => {
+    const from = resultData[headerRow].indexOf(name, width);
+    if (from < 0) return -1;
+    const to = anchor + 1;
+    for (let r = headerRow; r < resultData.length; r++) {
+      const v = resultData[r].splice(from, 1)[0];
+      resultData[r].splice(to, 0, v);
+    }
+    return to;
+  };
+  let zipAnchor = hasZipCol ? zipColIdx : colIdx;
+  if (kanjiNum) {
+    const at = moveCol('住所（半角数字化）', colIdx);
+    if (at >= 0) { if (hasZipCol && zipColIdx > colIdx) zipAnchor++; if (!hasZipCol) zipAnchor = at; }
+  }
+  if (doZip) moveCol('郵便番号（推定）', zipAnchor);
 
   // サマリー
   const msgs = [];
