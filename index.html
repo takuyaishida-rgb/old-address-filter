@@ -1061,7 +1061,9 @@ function resolveZip(rawAddress) {
   const rank = e => (e.precision || 0) * 100 + Math.min(e.townLen || 0, 99);
   const top = Math.max(...ests.map(rank));
   const tops = ests.filter(e => rank(e) === top);
-  if (tops.length === 1) return tops[0];
+  // 他県にも町域まで当たる結果があるか（確度の判定に使う）
+  const withCross = win => Object.assign({}, win, { otherPrefHits: ests.filter(e => e !== win && e.precision >= PREC.TOWN).length });
+  if (tops.length === 1) return withCross(tops[0]);
   if (top > 0) {
     const prefsHit = [...new Set(tops.map(e => e.pref).filter(Boolean))];
     if (prefsHit.length > 1) {
@@ -1071,7 +1073,7 @@ function resolveZip(rawAddress) {
       };
     }
   }
-  return tops[0];
+  return withCross(tops[0]);
 }
 
 // 1つの県の候補（results）から、最良の結果を決める
@@ -1199,6 +1201,47 @@ function detectOldWard(address, est) {
     shi, oldWard, start, end: start + oldWard.length, candidates,
     confirmed, grade: confirmed ? 'B' : 'C',
   };
+}
+
+// 確度（A〜E）。「宛名の住所をどこまで機械的に信用してよいか」を、郵便番号を一切使わずに決める。
+//   A: 原文の市区町村・町域が現行マスターにそのまま一致（補正なし）
+//   B: 変遷表（旧市町村・区再編表・東京35区）に基づいて自動補正し、変換先で町域が一致
+//   C: 実在性だけを根拠にした推定（区・郡の補完、部分一致、県名なし、再編表に裏付けの無い旧区候補）→ 宛名に使えるが要確認
+//   D: 市区町村までしか決まらない（掲載外・町域なし）
+//   E: 判定できない・矛盾（不明、区や県が決まらない、町域が複数候補、旧住所と判定したのに直せない）
+//   番地は常に未検証（住居表示の実施などで番地体系が変わる住所は直せない）
+function gradeAddress({ address, est, isOld, oldReason, current, convertedForZip, oldWard }) {
+  if (!address) return { grade: 'E', reason: '住所が空欄' };
+  const lv = (est && est.level) || '';
+  if (!est || !est.zip) {
+    if (est && est.cityZip) return { grade: 'D', reason: '町域を特定できず市区町村止まり' };
+    return { grade: 'E', reason: lv && lv !== '不明' ? lv : '住所から市区町村を特定できない' };
+  }
+  if (est.precision < PREC.TOWN) return { grade: 'D', reason: lv || '市区町村止まり' };
+
+  // 旧住所と判定したのに現行住所を作れていない（表記系のフラグだけの場合は除く）
+  const oldKind = /消滅|旧区/.test(oldReason || '');
+  if (isOld && oldKind && !current && !(oldWard && oldWard.grade === 'B')) {
+    return { grade: 'E', reason: '旧住所と判定したが現行住所を推定できない' };
+  }
+
+  // C: 実在性だけで決めたもの
+  const why = [];
+  if (/部分一致/.test(lv)) why.push('町域を部分一致で推定');
+  if (/区を補完/.test(lv)) why.push('省略された区を町域から補完');
+  if (/郡を補完/.test(lv)) why.push('省略された郡を補完');
+  if (oldWard && oldWard.grade === 'C') why.push('旧区の可能性（再編表に裏付けなし）');
+  const na = normAddr(address);
+  const prefWritten = REVERSE_INDEX && REVERSE_INDEX.prefKeysDesc.some(pf => na.includes(pf));
+  // 県名が無くても、他県に町域まで当たる結果が無ければ一意（全県を比べて決めている）
+  if (!prefWritten && est.otherPrefHits > 0) why.push('都道府県の記載なし・他県にも同名の住所');
+  if (why.length) return { grade: 'C', reason: why.join(' / ') };
+
+  // B: 変遷表に基づく自動補正
+  const fixed = !!(convertedForZip || (isOld && current) || (oldWard && oldWard.grade === 'B'));
+  if (fixed) return { grade: 'B', reason: '変遷表に基づき現行に変換し、町域が一致' };
+
+  return { grade: 'A', reason: '' };
 }
 
 // 旧区の判定と、確度Bのときの郵便番号の取り直し。
@@ -1939,6 +1982,7 @@ async function run() {
   if (doZip && hasZipCol) extraHeaders.push('郵便番号突合結果');
   if (doLegacy) extraHeaders.push('旧住所フラグ', '判定理由');
   if (kanjiNum) extraHeaders.push('補正後住所', '補正内容');
+  if (doZip || doLegacy) extraHeaders.push('確度', '確度の理由');
   if (geocode) extraHeaders.push('緯度', '経度', '地理レベル', 'マップURL');
   if (dedup) extraHeaders.push('正規化住所', '重複ステータス', '重複グループID');
 
@@ -1952,6 +1996,7 @@ async function run() {
   const dedupKeys = [];
   const listRows = [];
   let cFlag = 0, cWarn = 0, cZipFilled = 0, cConverted = 0, cGeocoded = 0;
+  const gradeCount = {};
 
   rows.forEach((row, i) => {
     const address = String(row[colIdx] || '').trim();
@@ -2058,6 +2103,13 @@ async function run() {
       extras.push(address ? fx.corrected : '', fx.notes.join(' / '));
     }
 
+    // 確度（A〜E）
+    if (doZip || doLegacy) {
+      const gr = gradeAddress({ address, est, isOld, oldReason, current, convertedForZip, oldWard });
+      gradeCount[gr.grade] = (gradeCount[gr.grade] || 0) + 1;
+      extras.push(gr.grade, gr.reason);
+    }
+
     // 緯度経度
     if (geocode) {
       const geo = usableZip ? geocodeFromZip(usableZip) : null;
@@ -2137,8 +2189,16 @@ async function run() {
     const at = moveCol('補正後住所', colIdx);
     if (at >= 0) {
       const at2 = moveCol('補正内容', at);
-      if (hasZipCol && zipColIdx > colIdx) zipAnchor += 2;
-      if (!hasZipCol) zipAnchor = at2;
+      let shift = 2;
+      let end = at2;
+      if (doZip || doLegacy) {
+        end = moveCol('確度', at2);
+        moveCol('確度の理由', end);
+        end += 1;
+        shift = 4;
+      }
+      if (hasZipCol && zipColIdx > colIdx) zipAnchor += shift;
+      if (!hasZipCol) zipAnchor = end;
     }
   }
   if (doZip) moveCol('郵便番号（推定）', zipAnchor);
@@ -2147,6 +2207,7 @@ async function run() {
   const msgs = [];
   if (doZip) msgs.push(`郵便番号を ${cZipFilled.toLocaleString()} 件付与`);
   if (kanjiNum) msgs.push(`住所を ${cConverted.toLocaleString()} 件補正`);
+  if (doZip || doLegacy) msgs.push('確度 ' + ['A', 'B', 'C', 'D', 'E'].map(g => `${g}:${(gradeCount[g] || 0).toLocaleString()}`).join(' '));
   if (geocode) msgs.push(`緯度経度を ${cGeocoded.toLocaleString()} 件付加`);
   if (dedup) msgs.push(`重複 ${dupGroups.toLocaleString()} グループ / ${dupRows.toLocaleString()} 行`);
   statusEl.textContent = msgs.join(' ／ ') || '完了';

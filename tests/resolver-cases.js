@@ -26,7 +26,7 @@ const api = new Function('window', 'MASTER', 'EXT', logic + `
   POSTAL_MASTER = MASTER;
   buildReverseIndex();
   EXTINCT_INDEX = buildExtinctIndex(EXT);
-  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip, applyOldWard };
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip, applyOldWard, gradeAddress };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -233,8 +233,37 @@ for (const [addr, want, note] of NOPREF_CASES) {
   console.log(`${ok ? 'OK  ' : 'NG  '} [県名なし] ${addr}`);
   if (!ok) console.log(`      期待=${want || '(未確定)'} 実際=${got || '(未確定)'} [${d.est.level}] ${note}`);
 }
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length;
-const fails = ng + zng + ong + kng + fxng + wng + ocng + npng;
+// --- 確度（A〜E）---
+const GRADE_CASES = [
+  // [住所, 期待する確度, 観点]
+  ['東京都千代田区鍛冶町二丁目6番2号', 'A', '原文のまま現行に一致'],
+  ['札幌市中央区南一条西二十三丁目1番15号', 'A', '丁目の範囲で一意化（マスターの規則）'],
+  ['千葉市末広町一丁目98番地', 'C', '省略された区を補完'],
+  ['神奈川県足柄上部大井町金子734番地1', 'C', '郡の誤記を補完'],
+  ['伊達市梅本町61番地', 'A', '県名なしでも、他県（福島の伊達市）に町域まで当たる結果が無ければ一意'],
+  ['東京都田無市本町3丁目1番1号', 'C', '町域を部分一致で推定'],
+  ['埼玉県大宮市大字小深作946番地の8', 'B', '旧市名を変遷表で現行に変換'],
+  ['川崎市高津区宮崎二丁目11番地11', 'B', '区再編表に基づく旧区の変換'],
+  ['雨龍郡妹背牛町字妹背牛361番地', 'D', '町域の登録が無く市区町村止まり'],
+  ['北海道虻田郡倶知安町字189-16', 'D', '町域名が欠落'],
+  ['東京都江戸川区西瑞江二丁目22番地43', 'E', '町域が決まらない'],
+];
+let gng = 0;
+for (const [addr, want, note] of GRADE_CASES) {
+  const d = api.resolveZipDeep(addr);
+  const isOldRes = api.judgeOldAddress(addr);
+  const extHit = (!api.isZipResolved(d.est) || d.converted) ? api.lookupExtinct(addr) : null;
+  const ow = api.applyOldWard(addr, d.est, d.converted);
+  const isOld = isOldRes.isOld || !!ow.flagReason;
+  const fx = api.correctAddress({ address: addr, est: ow.est, isOld, extHit, convertedForZip: ow.convertedForZip, convertOld: true, oldWard: ow.oldWard });
+  const g = api.gradeAddress({ address: addr, est: ow.est, isOld, oldReason: isOldRes.reason + (ow.flagReason || ''), current: fx.current, convertedForZip: ow.convertedForZip, oldWard: ow.oldWard });
+  const ok = g.grade === want;
+  if (!ok) gng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [確度${want}] ${addr}`);
+  if (!ok) console.log(`      期待=${want} 実際=${g.grade}（${g.reason}） ${note}`);
+}
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length + GRADE_CASES.length;
+const fails = ng + zng + ong + kng + fxng + wng + ocng + npng + gng;
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);
