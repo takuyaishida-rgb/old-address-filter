@@ -31,7 +31,7 @@ const api = new Function('window', 'MASTER', 'EXT', logic + `
   const byOldName = {};
   for (const e of EXT) if (e.oldName && !byOldName[e.oldName]) byOldName[e.oldName] = e;
   EXTINCT_INDEX = { byPref, all: EXT.slice().sort((a, b) => b.oldName.length - a.oldName.length), byOldName };
-  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers };
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -126,6 +126,8 @@ const OLD_CASES = [
   ['石川県野々市市本町三丁目7番12号', '', '現行は誤検知しない'],
   ['埼玉県さいたま市浦和区高砂三丁目15番1号', '', '現行は誤検知しない'],
   ['埼玉県浦和市原山四丁目3番23号', '消滅市名', '既存の市名判定は維持（二重に付けない）'],
+  ['大阪市城東区成育五丁目23番2号', '', '大阪市の城東区は東京35区時代の区ではない'],
+  ['東京都蒲田区蒲田一丁目1番1号', '消滅区名', '東京の旧区は維持'],
 ];
 let ong = 0;
 for (const [addr, word, note] of OLD_CASES) {
@@ -157,8 +159,31 @@ for (const [src, want] of KANJI_CASES) {
   console.log(`${ok ? 'OK  ' : 'NG  '} [数字化] ${src}`);
   if (!ok) console.log(`      期待=${want} 実際=${got}`);
 }
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length;
-const fails = ng + zng + ong + kng;
+const FIX_CASES = [
+  // [住所, 既存郵便番号, 補正後住所に含まれるべき文字列, 補正内容に含まれるべき語]
+  ['埼玉県大宮市大字小深作九四六番地の八', '337-0005', '埼玉県さいたま市見沼区小深作946番地の8', '旧住所'],
+  ['三重県久居市新町六壱弐番地の五', '514-1118', '三重県津市久居新町612番地の5', '旧住所'],
+  ['沖縄県平良市字下里７１９番地', '906-0013', '沖縄県宮古島市平良下里719番地', '旧住所'],
+  ['石川県石川郡野々市町本町三丁目七番壱弐号', '921-8815', '石川県野々市市本町3丁目7番12号', '旧住所'],
+  ['川崎市高津区宮崎二丁目１１番地１１', '216-0033', '川崎市宮前区宮崎2丁目11番地11', '区を'],
+  ['神奈川県横浜市緑区さつきが丘弐番地四六', '227-0053', '神奈川県横浜市青葉区さつきが丘2番地46', '区を'],
+  ['草加市氷川町七番地参', '340-0034', '草加市氷川町7番地3', '半角化'],
+];
+let fxng = 0;
+for (const [addr, zip, want, word] of FIX_CASES) {
+  const d = api.resolveZipDeep(addr);
+  const isOld = api.judgeOldAddress(addr, '').isOld;
+  const extHit = (!api.isZipResolved(d.est) || d.converted) ? api.lookupExtinct(addr) : null;
+  let usableZip = api.normalizeZip(zip);
+  const mz = api.checkZipMatch(addr, zip, d.est);
+  const fx = api.correctAddress({ address: addr, est: d.est, usableZip, isOld, extHit, convertedForZip: d.converted, mz, convertOld: true });
+  const ok = fx.corrected === want && fx.notes.join('/').includes(word);
+  if (!ok) fxng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [補正] ${addr}`);
+  if (!ok) console.log(`      期待=${want} 実際=${fx.corrected} [${fx.notes.join('/')}]`);
+}
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length;
+const fails = ng + zng + ong + kng + fxng;
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);

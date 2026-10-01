@@ -318,8 +318,7 @@
       </summary>
       <div class="body">
         <label class="check" id="optCityZip"><input type="checkbox" id="cityZipCheck">町域を特定できない行を市区町村の代表番号で埋める <span class="sub">郵便物は届くが町域単位の精度は落ちる</span></label>
-        <label class="check" id="optKanjiNum"><input type="checkbox" id="kanjiNumCheck" checked>番地・丁目の漢数字（壱弐参・〇を含む）と全角英数字を半角にした住所を別列に追記する</label>
-        <label class="check" id="optConvert"><input type="checkbox" id="convertCheck">現行住所（推定）を別列に追記する</label>
+        <label class="check" id="optKanjiNum"><input type="checkbox" id="kanjiNumCheck" checked>補正後の住所を住所列の右隣に追記する <span class="sub">旧市町村・旧区を現行に直し、番地・丁目の漢数字（壱弐参・〇を含む）と全角英数字を半角にする。補正内容も併記</span></label>
         <label class="check"><input type="checkbox" id="geocodeCheck">緯度経度・地図URLを追記する <span class="sub">地理データ約12MBを追加読み込み</span></label>
         <label class="check"><input type="checkbox" id="dedupCheck">表記ゆれを正規化して重複を検出する</label>
       </div>
@@ -491,6 +490,9 @@ function detectExtinctTokyoWard(address) {
       if (start < 0) continue;
       const cand = address.slice(start, i + 1);
       if (EXTINCT_TOKYO_WARD_MAP[cand]) {
+        // 政令市の区（大阪市城東区・横浜市港北区など）や東京都以外の住所は、東京35区時代の区ではない
+        const before = address.slice(0, start);
+        if (/[市郡]$/.test(before) || /(北海道|京都府|大阪府|.{2,3}県)/.test(before)) continue;
         return {
           oldWard: cand,
           newWard: EXTINCT_TOKYO_WARD_MAP[cand],
@@ -1525,9 +1527,47 @@ function checkZipMatch(address, rawZip, est) {
     const after = addr.slice(addr.indexOf(seirei[1]) + seirei[1].length);
     const wardWritten = after.match(/^[^\d]{1,5}?区/);
     if (!wardWritten) return { state: 'ok', text: `一致（住所に区の記載なし: ${ref.city}）` };
-    return { state: 'bad', text: `住所の区（${wardWritten[0]}）と郵便番号の区が異なる（郵便番号→${ref.pref}${ref.city}。区の再編で旧区のままの可能性）` };
+    const res = { state: 'bad', text: `住所の区（${wardWritten[0]}）と郵便番号の区が異なる（郵便番号→${ref.pref}${ref.city}。区の再編で旧区のままの可能性）` };
+    // 郵便番号の指す区に同じ町域があれば、区だけ差し替えた住所を補正案として返す
+    const start = addr.indexOf(seirei[1]) + seirei[1].length;
+    const town = normalizePlace(ref.town || '');
+    const rest = addr.slice(start + wardWritten[0].length).replace(/^(大字|字)/, '');
+    if (town && rest.startsWith(town)) res.wardFix = { start, end: start + wardWritten[0].length, from: wardWritten[0], to: seirei[2] };
+    return res;
   }
   return { state: 'bad', text: `住所と不一致（郵便番号→${ref.pref}${ref.city}）` };
+}
+
+// 補正後住所を作る。旧市町村・旧区の現行化 → 漢数字・全角の半角化の順
+//   current: 旧住所を現行に直した住所（直せなければ空）／notes: 何を直したか
+function correctAddress({ address, est, usableZip, isOld, extHit, convertedForZip, mz, convertOld }) {
+  let current = '';
+  if (convertOld) {
+    if (isOld && usableZip && est && est.matchedLen > 0) {
+      // 旧住所を変換して解決した場合、matchedLen は変換後の住所での位置なので、変換後の住所を基準にする
+      current = buildCurrentAddress(convertedForZip || address, usableZip, est.matchedLen);
+    }
+    if (isOld && !current && extHit) {
+      // 郵便番号の解決で使った変換結果があればそれを使う（旧町村名を町域に残した形を含む）
+      current = convertedForZip ||
+        (address.slice(0, extHit.matchStart) + resolveExtinctName(extHit) + address.slice(extHit.matchEnd));
+    }
+    if (isOld && !current) {
+      const wh = detectExtinctTokyoWard(address);
+      if (wh) current = address.slice(0, wh.matchStart) + wh.newWard + address.slice(wh.matchEnd);
+    }
+    if (isOld && !current && /[國縣區驛濱邊澤關藏櫻龍廳]/.test(address)) current = normalizeOldKanji(address);
+  }
+  let corrected = current || address;
+  const notes = [];
+  if (current) notes.push('旧住所を現行に変換');
+  if (!current && mz && mz.wardFix) {
+    corrected = address.slice(0, mz.wardFix.start) + mz.wardFix.to + address.slice(mz.wardFix.end);
+    notes.push(`区を郵便番号に合わせて補正（${mz.wardFix.from}→${mz.wardFix.to}）`);
+  }
+  const half = convertKanjiNumbers(corrected);
+  if (half !== corrected) { notes.push('漢数字・全角を半角化'); corrected = half; }
+  return { current, corrected, notes };
 }
 
 // ============================================================
@@ -1571,8 +1611,6 @@ $('modeSeg').addEventListener('click', e => {
 function applyMode() {
   const legacy = (mode === 'legacy' || mode === 'both');
   const zip = (mode === 'zip' || mode === 'both');
-  $('optConvert').style.display = legacy ? 'block' : 'none';
-  if (!legacy) $('convertCheck').checked = false;
   $('optCityZip').style.display = zip ? 'block' : 'none';
   if (!zip) $('cityZipCheck').checked = false;
 }
@@ -1691,8 +1729,8 @@ async function run() {
   const zipColIdx = parseInt($('zipColSelect').value);
   const doZip = (mode === 'zip' || mode === 'both');
   const doLegacy = (mode === 'legacy' || mode === 'both');
-  const convertOld = doLegacy && $('convertCheck').checked;
   const kanjiNum = $('kanjiNumCheck').checked;
+  const convertOld = doLegacy && kanjiNum;
   const fillWithCityZip = doZip && $('cityZipCheck').checked;
   const geocode = $('geocodeCheck').checked;
   const dedup = $('dedupCheck').checked;
@@ -1735,8 +1773,7 @@ async function run() {
   if (doZip) extraHeaders.push('郵便番号（推定）', '推定レベル', '未確定理由');
   if (doZip && hasZipCol) extraHeaders.push('郵便番号突合結果');
   if (doLegacy) extraHeaders.push('旧住所フラグ', '判定理由');
-  if (convertOld) extraHeaders.push('現行住所（推定）');
-  if (kanjiNum) extraHeaders.push('住所（半角数字化）');
+  if (kanjiNum) extraHeaders.push('補正後住所', '補正内容');
   if (geocode) extraHeaders.push('緯度', '経度', '地理レベル', 'マップURL');
   if (dedup) extraHeaders.push('正規化住所', '重複ステータス', '重複グループID');
 
@@ -1821,38 +1858,24 @@ async function run() {
     }
 
     // 既存郵便番号との突合
+    let mz = null;
     if (doZip && hasZipCol) {
-      const mz = checkZipMatch(address, rawZip, est);
+      mz = checkZipMatch(address, rawZip, est);
       extras.push(mz.state === 'none' ? '郵便番号なし' : mz.text);
       if (mz.state === 'bad') { isFlag = true; reasons.push(mz.text); }
     }
 
     if (doLegacy) extras.push(isOld ? 'TRUE' : 'FALSE', oldReason);
 
-    // 現行住所（推定）
     let current = '';
-    if (convertOld) {
-      if (isOld && usableZip && est && est.matchedLen > 0) {
-        current = buildCurrentAddress(address, usableZip, est.matchedLen);
-      }
-      if (isOld && !current && extHit) {
-        // 郵便番号の解決で使った変換結果があればそれを使う（旧町村名を町域に残した形を含む）
-        current = convertedForZip ||
-          (address.slice(0, extHit.matchStart) + resolveExtinctName(extHit) + address.slice(extHit.matchEnd));
-      }
-      if (isOld && !current) {
-        const wh = detectExtinctTokyoWard(address);
-        if (wh) current = address.slice(0, wh.matchStart) + wh.newWard + address.slice(wh.matchEnd);
-      }
-      if (isOld && !current && /[國縣區驛濱邊澤關藏櫻龍廳]/.test(address)) current = normalizeOldKanji(address);
-      if (current) { cConverted++; extras.push(current); }
-      else {
-        extras.push('');
-        if (isOld) pendings.push('現行住所を推定できず');
-      }
+    // 補正後住所: 旧市町村・旧区を現行に直し、番地の漢数字・全角英数字を半角にする
+    if (kanjiNum) {
+      const fx = correctAddress({ address, est, usableZip, isOld, extHit, convertedForZip, mz, convertOld });
+      current = fx.current;
+      if (isOld && !current) pendings.push('現行住所を推定できず');
+      if (fx.notes.length) cConverted++;
+      extras.push(address ? fx.corrected : '', fx.notes.join(' / '));
     }
-
-    if (kanjiNum) extras.push(address ? convertKanjiNumbers(address) : '');
 
     // 緯度経度
     if (geocode) {
@@ -1930,15 +1953,19 @@ async function run() {
   };
   let zipAnchor = hasZipCol ? zipColIdx : colIdx;
   if (kanjiNum) {
-    const at = moveCol('住所（半角数字化）', colIdx);
-    if (at >= 0) { if (hasZipCol && zipColIdx > colIdx) zipAnchor++; if (!hasZipCol) zipAnchor = at; }
+    const at = moveCol('補正後住所', colIdx);
+    if (at >= 0) {
+      const at2 = moveCol('補正内容', at);
+      if (hasZipCol && zipColIdx > colIdx) zipAnchor += 2;
+      if (!hasZipCol) zipAnchor = at2;
+    }
   }
   if (doZip) moveCol('郵便番号（推定）', zipAnchor);
 
   // サマリー
   const msgs = [];
   if (doZip) msgs.push(`郵便番号を ${cZipFilled.toLocaleString()} 件付与`);
-  if (convertOld) msgs.push(`現行住所（推定）を ${cConverted.toLocaleString()} 件追記`);
+  if (kanjiNum) msgs.push(`住所を ${cConverted.toLocaleString()} 件補正`);
   if (geocode) msgs.push(`緯度経度を ${cGeocoded.toLocaleString()} 件付加`);
   if (dedup) msgs.push(`重複 ${dupGroups.toLocaleString()} グループ / ${dupRows.toLocaleString()} 行`);
   statusEl.textContent = msgs.join(' ／ ') || '完了';
