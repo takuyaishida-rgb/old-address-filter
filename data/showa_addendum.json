@@ -93,6 +93,7 @@
   { "oldName": "龍ケ崎町", "prefecture": "茨城県", "newName": "龍ケ崎市", "mergedAt": "1954-03-20" },
   { "oldName": "取手町", "prefecture": "茨城県", "newName": "取手市", "mergedAt": "1970-10-01" },
 
+  { "oldName": "上大津村", "prefecture": "茨城県", "newName": "土浦市", "mergedAt": "1954-11-01", "_gun": "新治郡" },
   { "_section": "栃木県（1940s-1970s 市制施行）" },
   { "oldName": "佐野町", "prefecture": "栃木県", "newName": "佐野市", "mergedAt": "1943-04-01" },
   { "oldName": "鹿沼町", "prefecture": "栃木県", "newName": "鹿沼市", "mergedAt": "1948-10-10" },

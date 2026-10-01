@@ -23506,5 +23506,14 @@
 "newCode":46527,
 "mergedAt":"1975-02-10",
 "representativeZip":"8940321"
+},
+{
+"oldName":"新治郡上大津村",
+"oldCode":0,
+"prefecture":"茨城県",
+"newName":"土浦市",
+"newCode":0,
+"mergedAt":"1954-11-01",
+"representativeZip":"3000000"
 }
 ]

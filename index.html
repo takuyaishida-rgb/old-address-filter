@@ -1228,6 +1228,7 @@ function gradeAddress({ address, est, isOld, oldReason, current, convertedForZip
   // C: 実在性だけで決めたもの
   const why = [];
   if (/部分一致/.test(lv)) why.push('町域を部分一致で推定');
+  if (est.viaVillageBase) why.push('旧村の大字を「大字名＋町」の町域と推定');
   if (/区を補完/.test(lv)) why.push('省略された区を町域から補完');
   if (/郡を補完/.test(lv)) why.push('省略された郡を補完');
   if (oldWard && oldWard.grade === 'C') why.push('旧区の可能性（再編表に裏付けなし）');
@@ -1308,6 +1309,20 @@ function resolveZipFromExtinct(address, hit) {
   }
 
   const plainEst = resolveZip(plain);
+  // 旧「村」が市に編入された場合、住所の大字は新市の「大字名＋町」の町域として残ることが多い
+  //   例: 旧「新治郡上大津村神立」→ 現「土浦市神立町」（同名の神立東・神立中央は丁目に分かれた新しい町域）
+  //   町域が決まらなかった場合に限り、大字名に「町」だけ足した町域が実在するときだけ採る
+  if (/.村$/.test(oldCoreCity) && !(isZipResolved(plainEst) && plainEst.precision >= PREC.TOWN)) {
+    const tail0 = normAddr(suffix).replace(/^(大字|字)/, '');
+    const tok = leadingToken(tail0);
+    if (tok.length >= 2) {
+      const cand = prefix + name + tok + '町' + suffix.replace(/^(大字|字)/, '').slice(tok.length);
+      const e = resolveZip(cand);
+      if (isZipResolved(e) && e.precision >= PREC.TOWN && e.town === normAddr(tok + '町')) {
+        return { est: Object.assign({}, e, { level: e.level + '（旧村の基本町域を推定）', viaVillageBase: true }), address: cand, name };
+      }
+    }
+  }
   // 旧市が政令市の区に分かれた場合は、許容区の中だけで町域を探す（無関係な区を選ばない）
   const allowed = OLD_CITY_WARDS[oldCoreCity];
   if (allowed && /^.+市$/.test(name)) {
@@ -1428,7 +1443,7 @@ function normalizeAddressKey(addr) {
 
 // マスター生成物のバージョン。data/ を再生成したら必ず更新する。
 // これが無いとブラウザが古いJSONをキャッシュしたまま使い続ける。
-const DATA_VERSION = '20260805';
+const DATA_VERSION = '20261001';
 
 async function ensurePostalMaster(onProgress) {
   if (POSTAL_MASTER) return POSTAL_MASTER;
@@ -1743,10 +1758,10 @@ function correctAddress({ address, est, isOld, extHit, convertedForZip, convertO
   if (convertOld) {
     // 部分一致（旧町村名を手がかりに町域を1つに絞ったもの）は、町域まで直すと実在しない住所を作りうる
     // （例: 田無市本町→「西東京市田無町田無本町」）。この場合は市区町村名だけを現行にして、町域は原文のまま残す
-    const partial = !!(est && /部分一致/.test(est.level || ''));
+    const partial = !!(est && /部分一致/.test(est.level || '') && !est.viaVillageBase);
     if (partial && extHit) {
       const oldCore = extHit.entry.oldName.replace(/^.+?郡/, '');
-      const keepOld = /[町村]$/.test(oldCore) ? oldCore : '';   // 旧町村名は新しい町域名の一部に残ることが多いので消さない
+      const keepOld = /町$/.test(oldCore) ? oldCore : '';   // 旧町名は新しい町域名の一部に残ることが多いので消さない（村は市に編入されると町域名に残らないことが多い）
       current = address.slice(0, extHit.matchStart) + resolveExtinctName(extHit) + keepOld + address.slice(extHit.matchEnd);
       notes0.push('市区町村名のみ現行化（町域は原文のまま・要確認）');
     }
