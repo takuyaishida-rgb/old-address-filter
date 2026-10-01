@@ -175,5 +175,9 @@
   { "oldName": "御幸村", "prefecture": "神奈川県", "newName": "川崎市" },
   { "oldName": "大師町", "prefecture": "神奈川県", "newName": "川崎市" },
   { "oldName": "高津町", "prefecture": "神奈川県", "newName": "川崎市" },
-  { "oldName": "川崎町", "prefecture": "神奈川県", "newName": "川崎市" }
+  { "oldName": "川崎町", "prefecture": "神奈川県", "newName": "川崎市" },
+  { "_section": "不達評価で見つかった旧村名（2026-10-01。出典: Wikipedia）" },
+  { "oldName": "清水村", "prefecture": "愛媛県", "newName": "今治市", "mergedAt": "1955-02-01", "_gun": "越智郡" },
+  { "oldName": "小月村", "prefecture": "山口県", "newName": "下関市", "mergedAt": "1939-05-17", "_gun": "豊浦郡" },
+  { "oldName": "小月町", "prefecture": "山口県", "newName": "下関市", "mergedAt": "1939-05-17", "_gun": "豊浦郡" }
 ]

@@ -1047,6 +1047,11 @@ function resolveZipFromExtinct(address, hit) {
         return { est: e, address: cand, name };
       }
     }
+    // 町域まで決まらず、番地から始まる住所は、旧町村名の中心部分（小月村→小月）を大字として残す
+    // （旧町村名は新市の大字名として残ることが多く、消すと情報が欠ける。町域は決まっていないので確度は上がらない）
+    if (/^\d/.test(normAddr(tail)) && bare.length >= 2) {
+      return { est: plainEst, address: prefix + name + bare + suffix, name };
+    }
   }
   return { est: plainEst, address: plain, name };
 }
@@ -1128,7 +1133,7 @@ function normalizeAddressKey(addr) {
 
 // マスター生成物のバージョン。data/ を再生成したら必ず更新する。
 // これが無いとブラウザが古いJSONをキャッシュしたまま使い続ける。
-const DATA_VERSION = '20261002';
+const DATA_VERSION = '20261003';
 
 async function ensurePostalMaster(onProgress) {
   if (POSTAL_MASTER) return POSTAL_MASTER;

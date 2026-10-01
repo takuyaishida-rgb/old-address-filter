@@ -88,7 +88,7 @@ GitHub Pages（公開リポジトリ）で配信しており、**URLを知って
 
 #### 回帰テスト
 
-`tests/resolver-cases.js`（Node.js）。実住所116ケースで、上記すべての段階と「埋めてはいけないケース」を検証する。**ロジックを触ったら必ず通す。**
+`tests/resolver-cases.js`（Node.js）。実住所120ケースで、上記すべての段階と「埋めてはいけないケース」を検証する。**ロジックを触ったら必ず通す。**
 
 ```bash
 node tests/resolver-cases.js
