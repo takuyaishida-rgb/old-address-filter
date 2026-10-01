@@ -29,7 +29,7 @@ GitHub Pages（公開リポジトリ）で配信しており、**URLを知って
 
 ### A. 郵便番号（Postal）
 
-住所文字列から郵便番号を決める処理は `index.html` の**リゾルバ**に集約している（`resolveZip` / `resolveZipDeep`）。設計は次の4点。
+住所文字列から郵便番号を決める処理は `resolver.js` の**リゾルバ**に集約している（`resolveZip` / `resolveZipDeep`）。設計は次の4点。
 
 1. 段階を明示し、各段は「決まったか／決まらなかったか」だけを返す
 2. 候補が複数出たら **確度（precision）→ 一致した町域名の長さ** で機械的に選ぶ。同点なら決めない
@@ -88,7 +88,7 @@ GitHub Pages（公開リポジトリ）で配信しており、**URLを知って
 
 #### 回帰テスト
 
-`tests/resolver-cases.js`（Node.js）。実住所37ケースで、上記すべての段階と「埋めてはいけないケース」を検証する。**ロジックを触ったら必ず通す。**
+`tests/resolver-cases.js`（Node.js）。実住所114ケースで、上記すべての段階と「埋めてはいけないケース」を検証する。**ロジックを触ったら必ず通す。**
 
 ```bash
 node tests/resolver-cases.js
@@ -142,7 +142,7 @@ node tests/resolver-cases.js
 
 ## 8. 運用上の注意
 
-`data/` の生成物を再生成したら、`index.html` の `DATA_VERSION` を必ず更新する。ブラウザが約9MBの旧JSONをキャッシュし続け、更新が反映されないため。
+`data/` の生成物や `resolver.js` を更新したら、`resolver.js` の `DATA_VERSION` と `index.html` の `resolver.js?v=` を同じ値に上げる。ブラウザが約9MBの旧JSONをキャッシュし続け、更新が反映されないため。
 
 ## 9. スコープ外
 

@@ -76,7 +76,7 @@
 
 - 区名そのものが現行に無い場合（浜松市中区など）も、再編表の後継区に町域が実在するかで判定する。
 - 旧市が政令市の区に分かれた場合（浦和市・大宮市など）は、許容区表（`OLD_CITY_WARDS`）の区の中だけで町域を探す。無関係な区（浦和市本町→岩槻区）は選ばない。
-- 再編表・許容区表は人手で保守する（`index.html` 内）。載っていない旧区は確度Cになる。
+- 再編表・許容区表は人手で保守する（`resolver.js` 内）。載っていない旧区は確度Cになる。
 
 ### B-4. 補正台帳（人手で確定した補正）
 
@@ -120,7 +120,7 @@
 
 ## 開発
 
-ロジックを変更したら回帰テストを通す（実住所113ケース）。
+ロジックを変更したら回帰テストを通す（実住所114ケース）。
 
 ```bash
 node tests/resolver-cases.js
@@ -135,12 +135,12 @@ node tests/resolver-cases.js
 
 ```
 old-address-filter/
-├── index.html                  # アプリ本体（GitHub Pages で公開）
-├── filter_old_addresses.py     # Python版（ローカル一括処理用）
+├── index.html                  # 画面（UI）。GitHub Pages で公開
+├── resolver.js                 # 判定ロジック（DOM に依存しない。画面とテストの両方が読む）
+├── tests/resolver-cases.js     # 回帰テスト（Node.js）
 ├── docs/                       # プロダクト定義・デザインシステム
 ├── scripts/                    # マスター生成スクリプト
-├── data/                       # 実行時に読み込む生成物（raw/ は .gitignore）。overrides.json は人手補正台帳
-└── masters/                    # 都道府県別・旧市町村名マスター
+└── data/                       # 実行時に読み込む生成物（raw/ は .gitignore）。overrides.json は人手補正台帳
 ```
 
 ## データソース・更新
@@ -153,7 +153,7 @@ old-address-filter/
 
 日本郵便のデータは毎月更新される。最新化は `python scripts/build_postal_master.py`。
 
-**生成物を更新したら `index.html` の `DATA_VERSION` を必ず上げる。** ブラウザが約9MBの旧JSONをキャッシュし続け、更新が反映されない。
+**生成物・`resolver.js` を更新したら、`resolver.js` の `DATA_VERSION` と `index.html` の `resolver.js?v=` を同じ値に上げる**（テストが一致を確認する）。ブラウザが約9MBの旧JSONや旧ロジックをキャッシュし続け、更新が反映されない。
 
 ## 制約
 

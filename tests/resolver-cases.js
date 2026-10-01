@@ -3,7 +3,7 @@
  *
  *   node tests/resolver-cases.js
  *
- * index.html のロジック部分をそのまま読み込み、data/ の生成物を使って
+ * resolver.js をそのまま読み込み、data/ の生成物を使って
  * 実住所のケースを検証する。ロジックを触ったら必ずこれを通す。
  * 期待値は日本郵便 ken_all の実データで確認済み。
  */
@@ -11,11 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const ROOT = path.join(__dirname, '..');
 
-// --- index.html からロジック部分（UI より前）を取り出す ---
-const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf-8');
-const scriptStart = html.indexOf('<script>\n', html.indexOf('</head>')) ;
-const body = html.slice(scriptStart + 9, html.indexOf('</script>', scriptStart));
-const logic = body.slice(0, body.indexOf('// ============================================================\n// UI'));
+// --- ロジックは resolver.js（DOM に依存しない）をそのまま読み込む ---
+const logic = fs.readFileSync(path.join(ROOT, 'resolver.js'), 'utf-8');
 
 global.window = {};
 eval(fs.readFileSync(path.join(ROOT, 'data', 'cities.js'), 'utf-8'));
@@ -287,8 +284,14 @@ chk('当たらない住所は台帳が効かない', api.findOverride('茨城県
 const tpl = api.buildOverrideTemplateCsv([{ addr: '新治郡上大津村神立1', grade: 'C', reason: '推定', auto: '' }]);
 chk('雛形CSVを取り込んでも、補正後が空なので何も登録されない', api.parseOverridesCsv(tpl).length === 0, tpl);
 api.setOverrides([]);
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length + GRADE_CASES.length + 5;
-const fails = ng + zng + ong + kng + fxng + wng + ocng + npng + gng + ong2;
+// --- resolver.js のキャッシュ対策: index.html の ?v= と DATA_VERSION が一致していること ---
+const htmlText = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf-8');
+const tagVer = (htmlText.match(/resolver\.js\?v=(\d+)/) || [])[1];
+const codeVer = (logic.match(/const DATA_VERSION = '(\d+)'/) || [])[1];
+const verOk = !!tagVer && tagVer === codeVer;
+console.log(`${verOk ? 'OK  ' : 'NG  '} [バージョン] index.html の resolver.js?v=${tagVer} と DATA_VERSION ${codeVer} が一致`);
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length + NOPREF_CASES.length + GRADE_CASES.length + 5 + 1;
+const fails = ng + zng + ong + kng + fxng + wng + ocng + npng + gng + ong2 + (verOk ? 0 : 1);
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);
