@@ -31,7 +31,7 @@ const api = new Function('window', 'MASTER', 'EXT', logic + `
   const byOldName = {};
   for (const e of EXT) if (e.oldName && !byOldName[e.oldName]) byOldName[e.oldName] = e;
   EXTINCT_INDEX = { byPref, all: EXT.slice().sort((a, b) => b.oldName.length - a.oldName.length), byOldName };
-  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch };
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -136,8 +136,29 @@ for (const [addr, word, note] of OLD_CASES) {
   console.log(`${ok && !dup ? 'OK  ' : 'NG  '} [旧住所] ${addr}`);
   if (!ok || dup) console.log(`      期待=${word || '(旧住所でない)'} 実際=${r.reason || '(なし)'} ${note}`);
 }
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length;
-const fails = ng + zng + ong;
+const KANJI_CASES = [
+  ['埼玉県草加市氷川町七番地参', '埼玉県草加市氷川町7番地3'],
+  ['東京都府中市七壱〇弐番地の壱ライオンズマンション東府中四〇五号', '東京都府中市7102番地の1ライオンズマンション東府中405号'],
+  ['板橋区常盤台一丁目五九番壱壱ー壱〇弐号', '板橋区常盤台1丁目59番11-102号'],
+  ['町田市本町田弐五七七番地', '町田市本町田2577番地'],
+  ['岩手県和賀郡湯田町弐九地割七〇番地六', '岩手県和賀郡湯田町29地割70番地6'],
+  ['千代田区五番町四番地四', '千代田区五番町4番地4'],
+  ['愛知県一宮市三ツ井五丁目３番１号シェノン２０３号', '愛知県一宮市三ツ井5丁目3番1号シェノン203号'],
+  ['東京都葛飾区二十三番地', '東京都葛飾区23番地'],
+  ['千葉県八千代市大字村上２０９０番地８４', '千葉県八千代市大字村上2090番地84'],
+  ['東京都港区海岸一丁目６番１－２３０６号', '東京都港区海岸1丁目6番1-2306号'],
+  ['京都市上京区十日市町', '京都市上京区十日市町'],
+];
+let kng = 0;
+for (const [src, want] of KANJI_CASES) {
+  const got = api.convertKanjiNumbers(src);
+  const ok = got === want;
+  if (!ok) kng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [数字化] ${src}`);
+  if (!ok) console.log(`      期待=${want} 実際=${got}`);
+}
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length;
+const fails = ng + zng + ong + kng;
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);

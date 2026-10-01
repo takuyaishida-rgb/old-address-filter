@@ -318,6 +318,7 @@
       </summary>
       <div class="body">
         <label class="check" id="optCityZip"><input type="checkbox" id="cityZipCheck">町域を特定できない行を市区町村の代表番号で埋める <span class="sub">郵便物は届くが町域単位の精度は落ちる</span></label>
+        <label class="check" id="optKanjiNum"><input type="checkbox" id="kanjiNumCheck" checked>番地・丁目の漢数字（壱弐参・〇を含む）と全角英数字を半角にした住所を別列に追記する</label>
         <label class="check" id="optConvert"><input type="checkbox" id="convertCheck">現行住所（推定）を別列に追記する</label>
         <label class="check"><input type="checkbox" id="geocodeCheck">緯度経度・地図URLを追記する <span class="sub">地理データ約12MBを追加読み込み</span></label>
         <label class="check"><input type="checkbox" id="dedupCheck">表記ゆれを正規化して重複を検出する</label>
@@ -1363,6 +1364,46 @@ function normalizeZip(raw) {
   return String(raw).replace(/[^\d]/g, '').padStart(7, '0').slice(-7);
 }
 
+// --- 番地・丁目の漢数字 → 半角数字 ----------------------------
+// 登記簿は「壱弐参」「〇」など漢数字で番地を書く。DMの宛名・突合・重複検出で扱いやすいよう半角数字にそろえる。
+//   例: 「草加市氷川町七番地参」→「草加市氷川町7番地3」／「府中市七壱〇弐番地の壱」→「府中市7102番地の1」
+//       「板橋区常盤台一丁目五九番壱壱ー壱〇弐号」→「板橋区常盤台1丁目59番11-102号」
+// 地名の漢数字（三ツ井・五番町・十日市・千代田）は変換しない。数字として読むのは、直後が
+// 丁目・番地・番・号・地割・「の」のとき、または直前が番地・番・号・「の」・ハイフンのときだけ。
+const KANJI_DIGITS = { 〇:0, 零:0, 一:1, 壱:1, 壹:1, 二:2, 弐:2, 貳:2, 三:3, 参:3, 參:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9 };
+const KANJI_UNITS = { 十:10, 拾:10, 百:100, 千:1000 };
+const KANJI_NUM_CHARS = '〇零一壱壹二弐貳三参參四五六七八九十拾百千';
+const KANJI_RUN_RE = new RegExp('[' + KANJI_NUM_CHARS + ']+', 'g');
+function kanjiRunToNumber(run) {
+  if (![...run].some(c => KANJI_UNITS[c])) {
+    return [...run].map(c => KANJI_DIGITS[c]).join('');   // 位取り（七壱〇弐→7102）
+  }
+  let total = 0, cur = 0;
+  for (const c of run) {
+    if (c in KANJI_DIGITS) cur = KANJI_DIGITS[c];
+    else { total += (cur || 1) * KANJI_UNITS[c]; cur = 0; }   // 十・百・千（二十三→23）
+  }
+  return String(total + cur);
+}
+function toHalfWidthAscii(s) {
+  return s.replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[‐‑–—−ー](?=\d)/g, '-');
+}
+function convertKanjiNumbers(address) {
+  if (!address) return address;
+  let out = String(address).replace(KANJI_RUN_RE, (run, offset, whole) => {
+    const next = whole.charAt(offset + run.length);
+    const after = whole.slice(offset + run.length);
+    const prev = whole.slice(0, offset);
+    const followed = /^(丁目|番地|地割|号|の|ノ)/.test(after) || (next === '番' && !/^番町/.test(after));
+    const preceded = /(番地|番|号|の|ノ|[-ー－‐])$/.test(prev) || /\d$/.test(prev);
+    // 「十日市」「千代田」のような地名は、単独の十・百・千（単位だけ）では数字とみなさない
+    if (!(followed || preceded)) return run;
+    if (/^[十拾百千]+$/.test(run) && !followed) return run;
+    return kanjiRunToNumber(run);
+  });
+  return toHalfWidthAscii(out);
+}
+
 function judgeOldAddress(fullAddress, zipcode) {
   if (!fullAddress || typeof fullAddress !== 'string' || !fullAddress.trim()) return { isOld: false, reason: '' };
   // 外国住所（台湾・中華・アメリカ・タイ等）は判定対象外
@@ -1421,7 +1462,6 @@ function judgeOldAddress(fullAddress, zipcode) {
 
   const m = address.match(OLD_KANJI);
   if (m) reasons.push(`旧字体「${m[0]}」`);
-  if (KANJI_BANCHI.test(address)) reasons.push('漢数字番地');
   if (KATAKANA_NO.test(address)) reasons.push('カタカナ「ノ」区切り');
 
   // Bモード：郵便番号→現行住所との突合
@@ -1652,6 +1692,7 @@ async function run() {
   const doZip = (mode === 'zip' || mode === 'both');
   const doLegacy = (mode === 'legacy' || mode === 'both');
   const convertOld = doLegacy && $('convertCheck').checked;
+  const kanjiNum = $('kanjiNumCheck').checked;
   const fillWithCityZip = doZip && $('cityZipCheck').checked;
   const geocode = $('geocodeCheck').checked;
   const dedup = $('dedupCheck').checked;
@@ -1695,6 +1736,7 @@ async function run() {
   if (doZip && hasZipCol) extraHeaders.push('郵便番号突合結果');
   if (doLegacy) extraHeaders.push('旧住所フラグ', '判定理由');
   if (convertOld) extraHeaders.push('現行住所（推定）');
+  if (kanjiNum) extraHeaders.push('住所（半角数字化）');
   if (geocode) extraHeaders.push('緯度', '経度', '地理レベル', 'マップURL');
   if (dedup) extraHeaders.push('正規化住所', '重複ステータス', '重複グループID');
 
@@ -1805,6 +1847,8 @@ async function run() {
         if (isOld) pendings.push('現行住所を推定できず');
       }
     }
+
+    if (kanjiNum) extras.push(address ? convertKanjiNumbers(address) : '');
 
     // 緯度経度
     if (geocode) {
