@@ -1036,13 +1036,13 @@ function resolveZip(rawAddress) {
       if (hit) {
         // 町域名は当たったが一意に決まらない場合（小字・丁目・同名町域）。
         // ここで市区町村の代表番号に落とすと、町域が分かっているのに粗い番号を返すことになる。
-        results.push(Object.assign({}, hit, { level: hit.level + c.label, city: c.city }));
+        results.push(Object.assign({}, hit, { level: hit.level + c.label, city: c.city, tail: c.tail, label: c.label, pref: p.pref }));
         continue;
       }
       // 区を補完する探索では、町域が見つからない区は候補にしない（無関係な区の代表番号を拾わないため）
       if (c.label === '（区を補完）') continue;
       const cl = cityLevelResult(entryPref.cities[c.city], c.base);
-      if (cl.zip || cl.cityZip) results.push(Object.assign({}, cl, { level: cl.level + c.label, city: c.city }));
+      if (cl.zip || cl.cityZip) results.push(Object.assign({}, cl, { level: cl.level + c.label, city: c.city, tail: c.tail, label: c.label, pref: p.pref }));
     }
     if (results.length) {
       // 都道府県が特定できている場合は、その県の結果だけで判断する
@@ -1075,12 +1075,129 @@ function resolveZip(rawAddress) {
       candidates: [...new Set(wards)].slice(0, 5), ambiguousCount: wards.length,
     };
   }
+  // 区が書かれているのに、その区に町域が無い（市区町村の「掲載外」止まり）場合、同じ市の他の区に町域があれば
+  // 旧区の可能性がある。候補として添える（番号は使わず、住所の文字列とマスターの町域だけで判断）
+  if (best.precision === PREC.CITY && best.label === '' && best.tail != null) {
+    const sib = siblingWardHits(best);
+    if (sib.length) return Object.assign({}, best, { siblingWards: sib });
+  }
   return best;
+}
+
+// 区に該当町域が無いとき、同じ市の他の区で同じ町域を探す
+function siblingWardHits(best) {
+  const m = best.city.match(/^(.+市)(.+区)$/);
+  const entryPref = REVERSE_INDEX && REVERSE_INDEX.byPref[best.pref];
+  if (!m || !entryPref) return [];
+  const out = [];
+  for (const w of entryPref.wardsOf[m[1]] || []) {
+    if (w === best.city) continue;
+    const h = matchInCity(entryPref.cities[w], best.tail, 0);
+    if (h && h.zip && h.precision >= PREC.TOWN && !/部分一致/.test(h.level)) out.push({ city: w, town: h.town, zip: h.zip });
+  }
+  return out;
 }
 
 // 郵便番号が一意に決まったか
 function isZipResolved(est) {
   return !!(est && est.zip && est.precision >= PREC.CITY);
+}
+
+// --- 政令市の区再編表（人手）---------------------------------
+// 旧区 → 後継区（一部が移った場合は複数）。住所の文字列と町域の実在だけで旧区を判定する際、
+// 「この旧区からその区が分かれた」ことの裏付けに使う。裏付けがあれば自動補正（確度B）、無ければ候補提示（確度C）。
+// 出所: 各市の区の変遷（区の新設・分区の年を併記）。追加・訂正は人が行う。
+const WARD_REORG = {
+  '川崎市': { '高津区': ['宮前区'], '多摩区': ['麻生区'] },                          // 1982 宮前区・麻生区新設
+  '横浜市': { '緑区': ['青葉区', '都筑区'], '港北区': ['都筑区', '青葉区'],           // 1994 青葉区・都筑区新設
+              '戸塚区': ['泉区', '栄区'], '旭区': ['瀬谷区'], '南区': ['港南区'],      // 1986 泉区・栄区／1969 瀬谷区・港南区
+              '磯子区': ['金沢区'] },                                                  // 1948 金沢区
+  '大阪市': { '城東区': ['鶴見区'], '住吉区': ['住之江区', '阿倍野区'], '東住吉区': ['平野区'] },  // 1974 鶴見区・住之江区・平野区／1955 阿倍野区
+  '名古屋市': { '千種区': ['名東区'], '緑区': ['天白区'] },                            // 1975 名東区・天白区新設
+  '札幌市': { '白石区': ['厚別区'], '豊平区': ['清田区'], '西区': ['手稲区'] },        // 1989 厚別区・手稲区／1997 清田区
+  '京都市': { '右京区': ['西京区'], '東山区': ['山科区'] },                            // 1976 西京区・山科区新設
+  '福岡市': { '早良区': ['西区'] },                                                      // 1982 西区新設
+  '浜松市': { '中区': ['中央区'], '東区': ['中央区'], '南区': ['中央区'], '西区': ['中央区', '浜名区'],
+              '北区': ['浜名区'], '浜北区': ['浜名区'] },                                // 2024-01-01 区の再編（中央区・浜名区・天竜区）
+};
+
+// 旧市 → 政令市化後に含まれる区（許容区）。旧市名を新市の区に直すとき、無関係な区を選ばないための制約。
+// 許容区は広めに持つ（絞り込みは町域の実在で行う）。
+const OLD_CITY_WARDS = {
+  '浦和市': ['浦和区', '南区', '緑区', '桜区', '見沼区'],
+  '大宮市': ['大宮区', '北区', '西区', '見沼区', '桜区'],
+  '与野市': ['中央区'],
+  '岩槻市': ['岩槻区'],
+  '清水市': ['清水区'],
+};
+
+// --- 旧区の判定（住所の文字列だけで判断。郵便番号は使わない）---
+// 戻り値: null（旧区ではない／判断材料なし）または
+//   { shi, oldWard, start, end, candidates:[{city,town,zip}], confirmed: 後継区名|'', grade: 'B'|'C' }
+//   B: 再編表に載る後継区に町域が実在 → 自動補正してよい／C: 実在性だけの推定 → 候補提示
+function detectOldWard(address, est) {
+  if (!address || !REVERSE_INDEX) return null;
+  const na = normAddr(address);
+  let shi = '', oldWard = '', start = -1;
+  const candidates = [];
+
+  if (est && est.siblingWards && est.siblingWards.length && est.city) {
+    // 書かれた区は現行にあるが、その区に町域が無く、同じ市の他の区にある
+    const m = est.city.match(/^(.+市)(.+区)$/);
+    shi = m[1]; oldWard = m[2];
+    start = na.indexOf(est.city);
+    if (start >= 0) start += shi.length;
+    candidates.push(...est.siblingWards);
+  } else {
+    // 書かれた区の名前そのものが現行に無い（浜松市中区 など）→ 再編表の後継区で探す
+    for (const city in WARD_REORG) {
+      for (const w in WARD_REORG[city]) {
+        const i = na.indexOf(city + w);
+        if (i < 0) continue;
+        if (Object.values(REVERSE_INDEX.byPref).some(pe => pe.cities[city + w])) continue;
+        shi = city; oldWard = w; start = i + city.length;
+        const pref = Object.keys(REVERSE_INDEX.byPref).find(pp => REVERSE_INDEX.byPref[pp].wardsOf[city]);
+        const entryPref = pref && REVERSE_INDEX.byPref[pref];
+        const tail = na.slice(start + w.length);
+        for (const nw of WARD_REORG[city][w]) {
+          const key = city + nw;
+          if (!entryPref || !entryPref.cities[key]) continue;
+          const h = matchInCity(entryPref.cities[key], tail, 0);
+          if (h && h.zip && h.precision >= PREC.TOWN && !/部分一致/.test(h.level)) candidates.push({ city: key, town: h.town, zip: h.zip });
+        }
+        break;
+      }
+      if (oldWard) break;
+    }
+  }
+  if (!oldWard || start < 0 || !candidates.length) return null;
+
+  const reorg = (WARD_REORG[shi] || {})[oldWard] || [];
+  const backed = candidates.filter(c => reorg.includes(c.city.slice(shi.length)));
+  const confirmed = backed.length === 1 ? backed[0].city.slice(shi.length) : '';
+  return {
+    shi, oldWard, start, end: start + oldWard.length, candidates,
+    confirmed, grade: confirmed ? 'B' : 'C',
+  };
+}
+
+// 旧区の判定と、確度Bのときの郵便番号の取り直し。
+//   戻り値: { oldWard, est, convertedForZip, flagReason（要対応の理由。Bのみ）, pending（未確定の理由。Cのみ）}
+function applyOldWard(address, est, convertedForZip) {
+  const oldWard = detectOldWard(address, est);
+  const res = { oldWard, est, convertedForZip, flagReason: '', pending: '' };
+  if (!oldWard) return res;
+  if (oldWard.grade === 'B') {
+    // 再編表の裏付けがある → 旧住所として扱い、区を直した住所で郵便番号を取り直す
+    res.flagReason = `旧区「${oldWard.oldWard}」（現行: ${oldWard.shi}${oldWard.confirmed}。区の再編）`;
+    const fixedAddr = address.slice(0, oldWard.start) + oldWard.confirmed + address.slice(oldWard.end);
+    const d2 = resolveZipDeep(fixedAddr);
+    if (isZipResolved(d2.est)) { res.est = d2.est; res.convertedForZip = fixedAddr; }
+  } else {
+    const cs = oldWard.candidates.map(c => c.city).join('・');
+    res.pending = `区「${oldWard.oldWard}」に該当する町域が無い（${cs}に同名の町域。旧区の可能性・再編表に裏付けなし）`;
+  }
+  return res;
 }
 
 // --- 旧住所からの解決 ---------------------------------------
@@ -1128,6 +1245,25 @@ function resolveZipFromExtinct(address, hit) {
   }
 
   const plainEst = resolveZip(plain);
+  // 旧市が政令市の区に分かれた場合は、許容区の中だけで町域を探す（無関係な区を選ばない）
+  const allowed = OLD_CITY_WARDS[oldCoreCity];
+  if (allowed && /^.+市$/.test(name)) {
+    const hits = [];
+    for (const w of allowed) {
+      const cand = prefix + name + w + suffix;
+      const e = resolveZip(cand);
+      if (isZipResolved(e) && e.precision >= PREC.TOWN && e.city === name + w && !/部分一致/.test(e.level)) hits.push({ est: e, address: cand, name });
+    }
+    if (hits.length === 1) return hits[0];
+    // 複数の区に同じ町域がある、またはどの許容区にも無い → 区を決めない
+    return {
+      est: {
+        zip: '', precision: PREC.NONE, level: hits.length ? '区が特定できない' : '許容区に町域なし', matchedLen: 0,
+        candidates: hits.map(h => h.est.city),
+      },
+      address: plain, name,
+    };
+  }
   if (isZipResolved(plainEst) && plainEst.precision >= PREC.TOWN) {
     return { est: plainEst, address: plain, name };
   }
@@ -1537,7 +1673,7 @@ function checkZipMatch(address, rawZip, est) {
 
 // 補正後住所を作る。旧市町村・旧区の現行化 → 漢数字・全角の半角化の順
 //   current: 旧住所を現行に直した住所（直せなければ空）／notes: 何を直したか
-function correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld }) {
+function correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard }) {
   let current = '';
   if (convertOld) {
     if (isOld && est && est.zip && isZipResolved(est) && est.matchedLen > 0) {
@@ -1557,7 +1693,12 @@ function correctAddress({ address, est, isOld, extHit, convertedForZip, convertO
   }
   let corrected = current || address;
   const notes = [];
-  if (current) notes.push('旧住所を現行に変換');
+  if (current) notes.push(oldWard && oldWard.grade === 'B' ? `旧区を現行に変換（${oldWard.oldWard}→${oldWard.confirmed}）` : '旧住所を現行に変換');
+  // 旧区: 再編表の裏付けがあるもの（確度B）だけ直す。裏付けの無いもの（確度C）は直さず、理由欄に候補を出す
+  if (!current && oldWard && oldWard.grade === 'B') {
+    corrected = address.slice(0, oldWard.start) + oldWard.confirmed + address.slice(oldWard.end);
+    notes.push(`旧区を現行に変換（${oldWard.oldWard}→${oldWard.confirmed}）`);
+  }
   const half = convertKanjiNumbers(corrected);
   if (half !== corrected) { notes.push('漢数字・全角を半角化'); corrected = half; }
   return { current, corrected, notes };
@@ -1799,7 +1940,7 @@ async function run() {
 
     // 住所→郵便番号の推定
     let est = null, extHit = null, convertedForZip = '';
-    if (address && (doZip || convertOld || geocode || dedup)) {
+    if (address && (doZip || doLegacy || convertOld || geocode || dedup)) {
       const deep = resolveZipDeep(address);
       est = deep.est;
       convertedForZip = deep.converted;
@@ -1807,6 +1948,18 @@ async function run() {
     }
 
     // 下流（現行住所・緯度経度・重複）で使う郵便番号
+    // 旧区の判定（住所の文字列とマスターの町域だけで判断。郵便番号は使わない）
+    let oldWard = null;
+    if (doLegacy && address) {
+      const ow = applyOldWard(address, est, convertedForZip);
+      oldWard = ow.oldWard; est = ow.est; convertedForZip = ow.convertedForZip;
+      if (ow.flagReason) {
+        if (!isOld) { isOld = true; oldReason = ow.flagReason; isFlag = true; reasons.push(ow.flagReason); }
+        else { oldReason += ' / ' + ow.flagReason; reasons.push(ow.flagReason); }
+      }
+      if (ow.pending) pendings.push(ow.pending);
+    }
+
     const usableZip = pickUsableZip(est);
 
     // 郵便番号の付与：町域まで一致した場合のみ確定値として出す
@@ -1861,7 +2014,7 @@ async function run() {
     let current = '';
     // 補正後住所: 旧市町村・旧区を現行に直し、番地の漢数字・全角英数字を半角にする
     if (kanjiNum) {
-      const fx = correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld });
+      const fx = correctAddress({ address, est, isOld, extHit, convertedForZip, convertOld, oldWard });
       current = fx.current;
       if (isOld && !current) pendings.push('現行住所を推定できず');
       if (fx.notes.length) cConverted++;

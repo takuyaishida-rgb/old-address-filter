@@ -26,7 +26,7 @@ const api = new Function('window', 'MASTER', 'EXT', logic + `
   POSTAL_MASTER = MASTER;
   buildReverseIndex();
   EXTINCT_INDEX = buildExtinctIndex(EXT);
-  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip };
+  return { resolveZipDeep, isZipResolved, judgeOldAddress, checkZipMatch, convertKanjiNumbers, correctAddress, lookupExtinct, normalizeZip, pickUsableZip, applyOldWard };
 `)(global.window, master, extinct);
 
 // --- ケース: [住所, 期待する郵便番号（空文字は「未確定であるべき」）, 観点] ---
@@ -161,24 +161,62 @@ const FIX_CASES = [
   ['沖縄県平良市字下里７１９番地', '沖縄県宮古島市平良下里719番地', '旧住所', ''],
   ['石川県石川郡野々市町本町三丁目七番壱弐号', '石川県野々市市本町3丁目7番12号', '旧住所', ''],
   ['草加市氷川町七番地参', '草加市氷川町7番地3', '半角化', '旧住所'],
-  // 区の書き換えは郵便番号を根拠にしないので行わない（旧区の判定は工程2で住所側から作り直す）
-  ['川崎市高津区宮崎二丁目１１番地１１', '川崎市高津区宮崎2丁目11番地11', '半角化', '区を'],
-  ['神奈川県横浜市緑区さつきが丘弐番地四六', '神奈川県横浜市緑区さつきが丘2番地46', '半角化', '区を'],
+  // 旧区は、住所の区に町域が無く、再編表に載る後継区に町域がある場合だけ直す（郵便番号は使わない）
+  ['川崎市高津区宮崎二丁目１１番地１１', '神奈川県川崎市宮前区宮崎2丁目11番地11', '旧区', ''],
+  ['神奈川県横浜市緑区さつきが丘弐番地四六', '神奈川県横浜市青葉区さつきが丘2番地46', '旧区', ''],
+  ['横浜市戸塚区桂町３０３番地１', '神奈川県横浜市栄区桂町303番地1', '旧区', ''],
+  ['静岡県浜松市中区板屋町100番地', '静岡県浜松市中央区板屋町100番地', '旧区', ''],
 ];
 let fxng = 0;
 for (const [addr, want, word, ng_word] of FIX_CASES) {
   const d = api.resolveZipDeep(addr);
   const isOld = api.judgeOldAddress(addr).isOld;
   const extHit = (!api.isZipResolved(d.est) || d.converted) ? api.lookupExtinct(addr) : null;
-  const fx = api.correctAddress({ address: addr, est: d.est, isOld, extHit, convertedForZip: d.converted, convertOld: true });
+  const ow = api.applyOldWard(addr, d.est, d.converted);
+  const fx = api.correctAddress({ address: addr, est: ow.est, isOld: isOld || !!ow.flagReason, extHit, convertedForZip: ow.convertedForZip, convertOld: true, oldWard: ow.oldWard });
   const notes = fx.notes.join('/');
   const ok = fx.corrected === want && notes.includes(word) && (!ng_word || !notes.includes(ng_word));
   if (!ok) fxng++;
   console.log(`${ok ? 'OK  ' : 'NG  '} [補正] ${addr}`);
   if (!ok) console.log(`      期待=${want} 実際=${fx.corrected} [${notes}]`);
 }
-const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length;
-const fails = ng + zng + ong + kng + fxng;
+// --- 旧区の判定（住所の文字列だけ。郵便番号は使わない）---
+// [住所, 期待する後継区（確度B）, 期待する確度, 観点]  後継区が空なら「旧区ではない」
+const WARD_CASES = [
+  ['川崎市高津区宮崎二丁目11番地11', '宮前区', 'B', '1982 高津区→宮前区'],
+  ['神奈川県横浜市緑区さつきが丘2番地46', '青葉区', 'B', '1994 緑区→青葉区'],
+  ['横浜市戸塚区桂町303番地1', '栄区', 'B', '1986 戸塚区→栄区'],
+  ['静岡県浜松市中区板屋町100番地', '中央区', 'B', '2024 浜松市の区再編（区名自体が現行に無い）'],
+  ['横浜市鶴見区尻手一丁目1番8号', '', '', '現行の区に町域がある'],
+  ['大阪市城東区成育五丁目23番2号', '', '', '現行の区に町域がある'],
+  ['千葉市中央区本町二丁目6番36号', '', '', '区名と同名の町域を持つ区'],
+];
+let wng = 0;
+for (const [addr, want, grade, note] of WARD_CASES) {
+  const d = api.resolveZipDeep(addr);
+  const ow = api.applyOldWard(addr, d.est, d.converted).oldWard;
+  const got = ow ? ow.confirmed : '';
+  const ok = got === want && (!want || ow.grade === grade);
+  if (!ok) wng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [旧区] ${addr}`);
+  if (!ok) console.log(`      期待=${want || '(旧区でない)'} 実際=${ow ? ow.confirmed + '/' + ow.grade + '/' + ow.candidates.map(c => c.city) : '(なし)'} ${note}`);
+}
+// 旧市が政令市の区に分かれた場合に無関係な区を選ばない
+const OLDCITY_CASES = [
+  // [住所, 選んではいけない区, 期待する区（空なら決めない）]
+  ['埼玉県浦和市本町二丁目1番1号', 'さいたま市岩槻区', ''],
+  ['埼玉県大宮市本郷町1173番地', '', 'さいたま市北区'],
+];
+let ocng = 0;
+for (const [addr, forbid, wantCity] of OLDCITY_CASES) {
+  const e = api.resolveZipDeep(addr).est;
+  const ok = (!forbid || e.city !== forbid) && (!wantCity || e.city === wantCity);
+  if (!ok) ocng++;
+  console.log(`${ok ? 'OK  ' : 'NG  '} [旧市→区] ${addr}`);
+  if (!ok) console.log(`      実際=${e.city} ${e.level} zip=${e.zip}`);
+}
+const total = CASES.length + ZIP_CASES.length + OLD_CASES.length + KANJI_CASES.length + FIX_CASES.length + WARD_CASES.length + OLDCITY_CASES.length;
+const fails = ng + zng + ong + kng + fxng + wng + ocng;
 console.log(`
 全体 ${total - fails} / ${total} 通過`);
 process.exit(fails ? 1 : 0);
