@@ -384,63 +384,6 @@ const EXTINCT_DISTRICTS = [
   "日置郡","揖宿郡","川辺郡","南薩郡","姶良郡","宮古郡",
 ];
 
-const OLD_TOWNS = [
-  // 北海道
-  "戸井町","恵山町","椴法華村","南茅部町","上磯町","阿寒町","音別町","虻田町","洞爺村","鷹栖町",
-  // 東北
-  "大畑町","川内町","脇野沢村","浪岡町","岩木町","相馬村","木造町","平賀町",
-  "水沢市","江刺市","前沢町","胆沢町","衣川村","石鳥谷町","大迫町","三陸町",
-  "河南町","河北町","雄勝町","牡鹿町","古川市","三本木町","鹿島台町","岩出山町","鳴子町","田尻町","小牛田町","南郷町",
-  "河辺町","雄和町","本荘市","大曲市","角館町","田沢湖町","西木村",
-  "藤島町","羽黒町","櫛引町","温海町",
-  "岩代町","本宮町","熱塩加納村","勿来市","内郷市","平市","常磐市","磐城市",
-  // 関東
-  "真壁町","大和村","岩瀬町","下館市","内原町","波崎町",
-  "都賀町","粟野町","今市市","藤原町","足尾町","烏山町","黒磯市",
-  "富士見村","新田町","笠懸町","鬼石町","境町",
-  "浦和市","大宮市","与野市","岩槻市","鳩ヶ谷市","上福岡市","庄和町","妻沼町","江南町","岡部町","川本町","花園町","児玉町","吉田町","荒川村","大滝村","名栗村","騎西町","北川辺町","大利根町","鷲宮町","菖蒲町","栗橋町","吹上町","川里町",
-  "関宿町","三芳村","富山町","白浜町","千倉町","丸山町","和田町","天津小湊町","大原町","岬町","夷隅町","佐原市","小見川町","栗源町","八日市場市","野栄町","海上町","飯岡町","干潟町","山武町","蓮沼村","松尾町","成東町","沼南町","本埜村","印旛村",
-  "保谷市","田無市","秋川市","五日市町","城東区","深川区","本所区","向島区","浅草区","下谷区","神田区","麹町区","日本橋区","京橋区","芝区","麻布区","赤坂区","四谷区","牛込区","淀橋区","小石川区","本郷区","滝野川区","王子区","蒲田区","荏原区",
-  "津久井町","相模湖町","城山町","藤野町","戸太町","根岸村","本牧村","神奈川町","屏風浦村","川崎町","大師町","御幸村","田島町","中原町","高津町",
-  // 中部
-  "豊栄市","新津市","亀田町","巻町","六日町","栄町","下田村",
-  "大山町","八尾町","細入村","福野町","城端町","福光町","庄川町",
-  "宇ノ気町","高松町","七塚町","松任市","野々市町","門前町",
-  "武生市","今立町","上中町",
-  "石和町","春日居町","塩山市","若草町","白根町","田富町",
-  "更埴市","戸倉町","穂高町","豊科町","四賀村","豊野町","戸隠村",
-  "高富町","萩原町","八幡町","清水市","蒲原町","富士川町","菊川町","天竜市","浜北市",
-  "一色町","吉良町","長久手町","足助町","祖父江町",
-  "阿児町","浜島町","飯南町","飯高町",
-  // 近畿
-  "八日市市","水口町","甲西町","野洲町","安土町","伊吹町",
-  "木津町","加茂町","山城町","丹波町","園部町","峰山町","大宮町",
-  "布施市","河内市","枚岡市",
-  "一宮町","東浦町","西淡町","柏原町","城崎町","出石町","篠山町",
-  "月ヶ瀬村","都祁村","榛原町","大宇陀町","西吉野村",
-  "打田町","粉河町","南部町","熊野川町",
-  // 中国
-  "気高町","鹿野町","青谷町","赤碕町","大栄町",
-  "広瀬町","大東町","木次町","桜江町",
-  "御津町","邑久町","金光町","勝山町",
-  "吉和村","宮島町","加計町","三良坂町","豊平町",
-  "新南陽市","小野田市","東和町",
-  // 四国
-  "鴨島町","脇町","池田町","宍喰町",
-  "引田町","白鳥町","津田町","豊中町","綾上町",
-  "重信町","北条市","玉川町","久万町",
-  "土佐山田町","中村市","窪川町","赤岡町","野市町",
-  // 九州
-  "山田市","黒木町","若宮町","那珂川町",
-  "諸富町","神埼町","小城町",
-  "国見町","小浜町","加津佐町","西彼町","有川町",
-  "飽田町","松橋町","本渡市","牛深市",
-  "挾間町","湯布院町","三重町","三光村","安心院町",
-  "佐土原町","田野町","清武町","須木村","北方町",
-  "川内市","伊集院町","山川町","知覧町","加世田市","串木野市",
-  "豊見城村","佐敷町","具志川市","石川市","与那城町","平良市",
-];
-
 // 旧字体
 const OLD_KANJI = /[國縣區驛濱邊澤關藏櫻龍廳]/;
 // 旧字体→新字体 変換マップ（「武藏野市」→「武蔵野市」の照合や変換に利用）
@@ -585,8 +528,6 @@ const CURRENT_CITIES = withNormalized((window.POSTAL_MASTER_CITIES && window.POS
 // 旧市・旧郡セット（extinct_municipalities.json 由来、build script で生成）
 const EXTINCT_CITIES_DICT = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.extinctCities) || []);
 const EXTINCT_GUNS_DICT = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.extinctGuns) || []);
-// OLD_TOWNS と現行市が現在同名町域を持つ組合せ（"焼津市|栄町" 形式）
-const OLD_TOWN_CONFLICTS = new Set((window.POSTAL_MASTER_CITIES && window.POSTAL_MASTER_CITIES.oldTownConflicts) || []);
 const HAS_POSTAL_MASTER = CURRENT_GUNS.size > 0;
 
 // ヶ/ケ・旧字体の正規化を通して照合（「茅ヶ崎市」↔「茅ケ崎市」、「武藏野市」↔「武蔵野市」等）
@@ -1641,6 +1582,14 @@ function convertKanjiNumbers(address) {
   return toHalfWidthAscii(out);
 }
 
+// 同じ県に、その名前の現行の市区町村があるか（旧名と同じ名前の現行の自治体を旧住所と誤検知しないため）
+function isCurrentMunicipality(name, pref) {
+  const pe = REVERSE_INDEX && REVERSE_INDEX.byPref[normAddr(pref)];
+  if (!pe) return citySetHas(name);
+  const n = normAddr(name);
+  return !!(pe.cities[n] || (pe.gunlessOf && pe.gunlessOf[n]));
+}
+
 function judgeOldAddress(fullAddress) {
   if (!fullAddress || typeof fullAddress !== 'string' || !fullAddress.trim()) return { isOld: false, reason: '' };
   // 外国住所（台湾・中華・アメリカ・タイ等）は判定対象外
@@ -1673,27 +1622,19 @@ function judgeOldAddress(fullAddress) {
     hit.add(wardHit.oldWard);
   }
 
-  // 消滅地名（ハードコード）：前後境界の両方を満たす場合のみマッチ
-  // ＋ 現行市が同名町域を持つケース（焼津市栄町・藤枝市岡部町 等）は OLD_TOWN_CONFLICTS でスキップ
-  const currentCityForConflict = (cityHit && cityHit.status === 'current') ? cityHit.city : null;
-  for (const t of OLD_TOWNS) {
-    if (hit.has(t)) continue;
-    // 東京35区系は上の detectExtinctTokyoWard で扱う（ここでは重複検出しない）
-    if (EXTINCT_TOKYO_WARD_MAP[t]) continue;
-    const re = new RegExp(ADDR_PREBOUNDARY + escapeRegex(t) + ADDR_BOUNDARY);
-    if (!re.test(address)) continue;
-    if (currentCityForConflict && OLD_TOWN_CONFLICTS.has(`${currentCityForConflict}|${t}`)) continue;
-    reasons.push(`消滅地名「${t}」`);
-    hit.add(t);
-  }
-
-  // 旧市町村マップによる判定（野々市町→野々市市 など、ハードコード一覧に無い町村を拾う）
-  //   市区町村の位置（都道府県・郡の直後）に出現した場合だけ採用する。町域名との誤検知を避けるため
-  if (reasons.length === 0 || !reasons.some(r => r.startsWith('消滅'))) {
+  // 旧市町村マップによる判定（旧名の一覧はマップ1本）
+  //   市区町村の位置（都道府県・郡の直後）に出現した場合だけ採用する。町域名との誤検知（栄町・本町など）を避けるため
+  //   同じ県に同名の現行市区町村がある場合、県名が無く他県に同名の現行・旧の市区町村がある場合は旧住所と断定しない
+  if (!reasons.some(r => r.startsWith('消滅'))) {
     const eh = lookupExtinct(address);
-    if (eh && !citySetHas(eh.entry.oldName)) {
+    if (eh) {
+      const core = eh.entry.oldName.replace(/^.+?郡/, '');
       const before = address.slice(0, eh.matchStart).replace(/^(?:北海道|東京都|京都府|大阪府|.{2,3}県)/, '');
-      if (!before.trim()) reasons.push(`消滅市町村名「${eh.entry.oldName}」（現: ${resolveExtinctName(eh)}）`);
+      const prefWritten = before.length < eh.matchStart;
+      const ambiguous = !prefWritten && (citySetHas(core) || EXTINCT_INDEX.all.some(e => e !== eh.entry && e.oldName === eh.entry.oldName && e.prefecture !== eh.entry.prefecture));
+      if (!before.trim() && !ambiguous && !isCurrentMunicipality(core, eh.entry.prefecture)) {
+        reasons.push(`消滅市町村名「${eh.entry.oldName}」（現: ${resolveExtinctName(eh)}）`);
+      }
     }
   }
 
